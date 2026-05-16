@@ -613,7 +613,7 @@
     function ReportShell({header,sections,onClose,fileName}){
       const [exporting,setExporting]=useState(false);
       async function downloadPNG(){
-        const el=document.getElementById("la-report-card");
+        const el=document.getElementById("la-report-wrapper");
         if(!el){console.error("Card element not found"); return;}
         if(!window.domtoimage){console.error("domtoimage not loaded"); return;}
         setExporting(true);
@@ -621,7 +621,6 @@
           const dataUrl=await window.domtoimage.toPng(el,{
             scale:2,
             bgcolor:"#FAF3EE",
-            style:{borderRadius:"0px"}
           });
           const link=document.createElement("a");
           link.download=fileName+".png";
@@ -634,10 +633,12 @@
       }
       return <div style={{position:"fixed",inset:0,background:"rgba(30,58,52,0.6)",zIndex:65,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"flex-start",padding:"16px",overflowY:"auto",animation:"laModalIn 0.2s ease"}}>
         <button onClick={onClose} className="la-tap" style={{alignSelf:"flex-end",background:"#fff",border:"none",borderRadius:8,padding:"8px 14px",fontSize:14,fontWeight:"bold",cursor:"pointer",marginBottom:10,flexShrink:0}}>✕ Cerrar</button>
-        <div id="la-report-card" style={{background:"#FAF3EE",borderRadius:18,width:"100%",maxWidth:360,padding:"22px 20px",position:"relative",overflow:"hidden",animation:"laPopIn 0.28s ease",flexShrink:0}}>
-          <div style={{position:"absolute",top:-30,right:-30,width:110,height:110,background:"#F4C0C0",borderRadius:"50%",opacity:0.5}} />
-          <div style={{position:"absolute",bottom:-40,left:-30,width:120,height:120,background:"#F4C0C0",borderRadius:"50%",opacity:0.35}} />
-          <div style={{position:"relative"}}>{header}{sections.map((s,i)=><div key={i}>{s}</div>)}</div>
+        <div id="la-report-wrapper" style={{background:"#FAF3EE",borderRadius:18,padding:4,flexShrink:0,width:"100%",maxWidth:360}}>
+          <div id="la-report-card" style={{background:"#FAF3EE",borderRadius:14,width:"100%",padding:"22px 20px",position:"relative",overflow:"hidden",animation:"laPopIn 0.28s ease"}}>
+            <div style={{position:"absolute",top:-30,right:-30,width:110,height:110,background:"#F4C0C0",borderRadius:"50%",opacity:0.5}} />
+            <div style={{position:"absolute",bottom:-40,left:-30,width:120,height:120,background:"#F4C0C0",borderRadius:"50%",opacity:0.35}} />
+            <div style={{position:"relative"}}>{header}{sections.map((s,i)=><div key={i}>{s}</div>)}</div>
+          </div>
         </div>
         <button onClick={downloadPNG} disabled={exporting} className="la-tap" style={{marginTop:14,marginBottom:8,background:exporting?"#e8c5c2":"#E8918A",color:"#1E3A34",border:"none",borderRadius:10,padding:"13px 32px",fontSize:14,fontWeight:"bold",cursor:exporting?"default":"pointer",width:"100%",maxWidth:360,flexShrink:0}}>{exporting?"Generando imagen…":"⬇ Descargar reporte (PNG)"}</button>
       </div>;
