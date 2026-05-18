@@ -81,19 +81,30 @@
       }catch(e){ console.warn("fbSet failed", e); }
     }
 
-    // Firebase converts arrays to objects with numeric keys when there are gaps,
-    // or when values are objects themselves. This restores them to proper arrays.
+    // Firebase strips empty arrays and converts arrays to numeric-keyed objects.
+    // This function deep-restores the data to what the app expects:
+    //   - Any object whose keys are ALL numeric strings → array
+    //   - Known array fields that arrived as null → []
     function fbFixArrays(value){
       if(value === null || value === undefined) return value;
       if(Array.isArray(value)) return value.map(fbFixArrays);
       if(typeof value === "object"){
         const keys = Object.keys(value);
-        // If all keys are consecutive integers starting at 0, it's an array
-        const isArr = keys.length > 0 && keys.every((k,i) => String(i) === k);
-        if(isArr) return keys.map(k => fbFixArrays(value[k]));
-        // Recurse into object values
+        // Any object with only numeric keys is treated as an array
+        const allNumeric = keys.length > 0 && keys.every(k => /^\d+$/.test(k));
+        if(allNumeric){
+          const maxIdx = Math.max(...keys.map(Number));
+          const arr = [];
+          for(let i=0; i<=maxIdx; i++) arr.push(fbFixArrays(value[i] ?? null));
+          return arr;
+        }
+        // Recurse into plain objects; fix known array fields that may be null/missing
+        const ARRAY_FIELDS = ["lines","options","choices","categories","items","orders","completed","dayRecords"];
         const out = {};
-        keys.forEach(k => { out[k] = fbFixArrays(value[k]); });
+        keys.forEach(k => {
+          out[k] = fbFixArrays(value[k]);
+        });
+        ARRAY_FIELDS.forEach(f => { if(out[f] === null || out[f] === undefined) out[f] = []; });
         return out;
       }
       return value;
@@ -114,7 +125,15 @@
             const raw = snap.val();
             if(raw === null) return;
             if(skipNext.current){ skipNext.current=false; return; }
-            const remote = fbFixArrays(raw);
+            let remote = fbFixArrays(raw);
+            // Top-level arrays (orders, completed, dayRecords) must always be arrays
+            if(!Array.isArray(remote) && typeof remote === "object" && Object.keys(remote).every(k=>/^\d+$/.test(k))){
+              remote = fbFixArrays(remote);
+            }
+            if(typeof remote === "object" && !Array.isArray(remote) && remote !== null){
+              // Ensure nested array fields exist
+              ["lines","options","choices"].forEach(f=>{ if(remote[f]===undefined||remote[f]===null) remote[f]=[]; });
+            }
             setVal(remote);
             saveState(lsKey, remote);
           });
