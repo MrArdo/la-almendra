@@ -25,7 +25,7 @@
   <div id="root"></div>
   <script type="text/babel">
     const { useState, useEffect, useRef, useMemo, useCallback } = React;
- 
+
     /* =========================================================
        PALETTE
        ========================================================= */
@@ -72,9 +72,31 @@
       return _db;
     }
 
-    // Write a value to a Firebase path
+    // Write a value to a Firebase path.
+    // Firebase doesn't support undefined values — strip them out first.
     function fbSet(path, value){
-      try{ getDb().ref(path).set(value); }catch(e){ console.warn("fbSet failed", e); }
+      try{
+        const clean = JSON.parse(JSON.stringify(value, (k,v) => v===undefined ? null : v));
+        getDb().ref(path).set(clean);
+      }catch(e){ console.warn("fbSet failed", e); }
+    }
+
+    // Firebase converts arrays to objects with numeric keys when there are gaps,
+    // or when values are objects themselves. This restores them to proper arrays.
+    function fbFixArrays(value){
+      if(value === null || value === undefined) return value;
+      if(Array.isArray(value)) return value.map(fbFixArrays);
+      if(typeof value === "object"){
+        const keys = Object.keys(value);
+        // If all keys are consecutive integers starting at 0, it's an array
+        const isArr = keys.length > 0 && keys.every((k,i) => String(i) === k);
+        if(isArr) return keys.map(k => fbFixArrays(value[k]));
+        // Recurse into object values
+        const out = {};
+        keys.forEach(k => { out[k] = fbFixArrays(value[k]); });
+        return out;
+      }
+      return value;
     }
 
     // React hook: syncs a piece of state with Firebase in real time.
@@ -89,9 +111,10 @@
         try{
           ref = getDb().ref(fbPath);
           ref.on("value", snap => {
-            const remote = snap.val();
-            if(remote === null) return;
+            const raw = snap.val();
+            if(raw === null) return;
             if(skipNext.current){ skipNext.current=false; return; }
+            const remote = fbFixArrays(raw);
             setVal(remote);
             saveState(lsKey, remote);
           });
