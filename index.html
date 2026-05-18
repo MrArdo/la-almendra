@@ -126,14 +126,9 @@
             if(raw === null) return;
             if(skipNext.current){ skipNext.current=false; return; }
             let remote = fbFixArrays(raw);
-            // Top-level arrays (orders, completed, dayRecords) must always be arrays
-            if(!Array.isArray(remote) && typeof remote === "object" && Object.keys(remote).every(k=>/^\d+$/.test(k))){
-              remote = fbFixArrays(remote);
-            }
-            if(typeof remote === "object" && !Array.isArray(remote) && remote !== null){
-              // Ensure nested array fields exist
-              ["lines","options","choices"].forEach(f=>{ if(remote[f]===undefined||remote[f]===null) remote[f]=[]; });
-            }
+            // If this path holds orders (arrays of order objects), normalize each one
+            if(Array.isArray(remote)) remote = remote.map(item => item && typeof item==="object" && ("lines" in item || item.id) ? normalizeOrder(item) : item);
+            else if(remote && typeof remote==="object" && Object.keys(remote).every(k=>/^\d+$/.test(k))) remote = normalizeOrders(remote);
             setVal(remote);
             saveState(lsKey, remote);
           });
@@ -491,6 +486,24 @@
     /* =========================================================
        CATALOG HELPERS
        ========================================================= */
+    // Ensures every order coming from Firebase has the correct shape.
+    // Firebase drops empty arrays and converts arrays to objects — this fixes that.
+    function normalizeOrder(o){
+      if(!o || typeof o !== "object") return o;
+      return {
+        ...o,
+        lines: Array.isArray(o.lines) ? o.lines.map(l=>({...l, opts:l.opts||{}}))
+             : o.lines && typeof o.lines === "object" ? Object.values(o.lines).map(l=>({...l, opts:l.opts||{}}))
+             : [],
+      };
+    }
+    function normalizeOrders(arr){
+      if(!arr) return [];
+      if(Array.isArray(arr)) return arr.map(normalizeOrder);
+      if(typeof arr === "object") return Object.values(arr).map(normalizeOrder);
+      return [];
+    }
+
     function indexCatalog(cat){
       // Defensive: ensure cat has required shape
       const categories=cat?.categories||[];
@@ -757,8 +770,8 @@
         if(changed) saveState("la_catalog", cat);
         return cat;
       });
-      const [orders,     setOrders]     = useFbKey("la_orders",     "la_orders",     loadState("la_orders",     []));
-      const [completed,  setCompleted]  = useFbKey("la_completed",  "la_completed",  loadState("la_completed",  []));
+      const [orders,     setOrders]     = useFbKey("la_orders",     "la_orders",     normalizeOrders(loadState("la_orders",     [])));
+      const [completed,  setCompleted]  = useFbKey("la_completed",  "la_completed",  normalizeOrders(loadState("la_completed",  [])));
       const [dayRecords, setDayRecords] = useFbKey("la_dayRecords", "la_dayRecords", loadState("la_dayRecords", []));
       const [soundOn,    setSoundOn]    = useFbKey("la_soundOn",    "la_soundOn",    loadState("la_soundOn",    true));
 
