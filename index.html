@@ -393,9 +393,9 @@
       base+=optionsExtraPrice(item, line.opts);
       return base;
     }
-    function lineSubtotalWith(catalog,line){ return linePriceWith(catalog,line)*line.qty; }
-    function orderTotalWith(catalog,order){ return order.lines.reduce((s,l)=>s+lineSubtotalWith(catalog,l),0); }
-    function orderItemCountWith(order){ return order.lines.reduce((s,l)=>s+l.qty,0); }
+    function lineSubtotalWith(catalog,line){ return linePriceWith(catalog,line)*(line.qty||0); }
+    function orderTotalWith(catalog,order){ return (Array.isArray(order?.lines)?order.lines:[]).reduce((s,l)=>s+lineSubtotalWith(catalog,l),0); }
+    function orderItemCountWith(order){ return (Array.isArray(order?.lines)?order.lines:[]).reduce((s,l)=>s+(l.qty||0),0); }
 
     // Build 24-hour activity buckets from a list of orders
     function hourBucketsFromOrders(catalog, orders){
@@ -969,8 +969,8 @@
       const activeOrder=orders.find(o=>o.id===activeOrderId);
       const dayTotal=completed.reduce((s,o)=>s+orderTotalWith(catalog,o),0);
       const openTotal=orders.reduce((s,o)=>s+orderTotalWith(catalog,o),0);
-      const catBreakdown=useMemo(()=>{ const m={}; completed.forEach(o=>o.lines.forEach(l=>{ const it=catalog.itemMap[l.itemId]; const c=it?catalog.catMap[it.catId]?.name||"—":"(eliminado)"; if(!m[c]) m[c]={cat:c,qty:0,total:0}; m[c].qty+=l.qty; m[c].total+=lineSubtotalWith(catalog,l); })); return Object.values(m).sort((a,b)=>b.total-a.total); },[completed,catalog]);
-      const topItems=useMemo(()=>{ const m={}; completed.forEach(o=>o.lines.forEach(l=>{ const k=lineDisplayNameWith(catalog,l); const it=catalog.itemMap[l.itemId]; const c=it?catalog.catMap[it.catId]?.name||"—":"—"; if(!m[k]) m[k]={name:k,cat:c,qty:0,total:0}; m[k].qty+=l.qty; m[k].total+=lineSubtotalWith(catalog,l); })); return Object.values(m).sort((a,b)=>b.qty-a.qty); },[completed,catalog]);
+      const catBreakdown=useMemo(()=>{ const m={}; completed.forEach(o=>(Array.isArray(o?.lines)?o.lines:[]).forEach(l=>{ const it=catalog.itemMap[l.itemId]; const c=it?catalog.catMap[it.catId]?.name||"—":"(eliminado)"; if(!m[c]) m[c]={cat:c,qty:0,total:0}; m[c].qty+=l.qty; m[c].total+=lineSubtotalWith(catalog,l); })); return Object.values(m).sort((a,b)=>b.total-a.total); },[completed,catalog]);
+      const topItems=useMemo(()=>{ const m={}; completed.forEach(o=>(Array.isArray(o?.lines)?o.lines:[]).forEach(l=>{ const k=lineDisplayNameWith(catalog,l); const it=catalog.itemMap[l.itemId]; const c=it?catalog.catMap[it.catId]?.name||"—":"—"; if(!m[k]) m[k]={name:k,cat:c,qty:0,total:0}; m[k].qty+=l.qty; m[k].total+=lineSubtotalWith(catalog,l); })); return Object.values(m).sort((a,b)=>b.qty-a.qty); },[completed,catalog]);
       const payBreakdown=useMemo(()=>{
         let ef=0,ta=0,tr=0,pr=0,pe=0,pt=0,ptr=0;
         completed.forEach(o=>{ const t=orderTotalWith(catalog,o); const tip=resolveTip(t,o.payment); const m=o.payment?.method||"efectivo";
