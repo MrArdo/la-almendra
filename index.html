@@ -754,7 +754,7 @@
       const [profile, setProfile] = useState(null);
       const [pins, setPins] = useState(()=>loadState("la_pins", {admin:"",servicio:"",cocina:""}));
       const [initialized, setInitialized] = useState(()=>loadState("la_initialized", false));
-      const [catalogRaw, setCatalogRaw] = useState(()=>{
+      const [catalogRaw, setCatalogRaw] = useFbKey("la_catalog", "la_catalog", (()=>{
         let cat=loadState("la_catalog", null);
         if(!cat) return buildDefaultCatalog();
         // Migration: ensure milk option exists on items that need it
@@ -769,7 +769,7 @@
         })};
         if(changed) saveState("la_catalog", cat);
         return cat;
-      });
+      })());
       const [orders,     setOrders]     = useFbKey("la_orders",     "la_orders",     normalizeOrders(loadState("la_orders",     [])));
       const [completed,  setCompleted]  = useFbKey("la_completed",  "la_completed",  normalizeOrders(loadState("la_completed",  [])));
       const [dayRecords, setDayRecords] = useFbKey("la_dayRecords", "la_dayRecords", loadState("la_dayRecords", []));
@@ -804,7 +804,7 @@
       // pins, initialized, catalog: device-local only (no cross-device sync needed)
       useEffect(()=>saveState("la_pins",pins),[pins]);
       useEffect(()=>saveState("la_initialized",initialized),[initialized]);
-      useEffect(()=>saveState("la_catalog",catalogRaw),[catalogRaw]);
+      // catalogRaw synced via useFbKey (no extra effect needed)
       // orders, completed, dayRecords, soundOn: synced via useFbKey (no extra effect needed)
 
       // Close profile dropdown on outside click
@@ -1098,7 +1098,7 @@
             {tab==="activos"&&<TabActivos catalog={catalog} orders={orders} profile={profile} canDelete={profile==="admin"||profile==="servicio"}
               onNew={()=>setNewAccountModal(true)} onTakeout={()=>setTakeoutModal(true)} onOpen={id=>setActiveOrderId(id)}
               onDelete={o=>setConfirmModal({title:"Eliminar cuenta",desc:`¿Eliminar la cuenta de ${o.name}?`,confirmLabel:"Eliminar",danger:true,onConfirm:()=>{deleteOrder(o.id);setConfirmModal(null);}})} />}
-            {tab==="cocina"&&<TabCocina catalog={catalog} orders={orders} soundOn={soundOn} setSoundOn={setSoundOn} onMarkLine={setLinePrepared} onMarkAll={markOrderAllPrepared} />}
+            {tab==="cocina"&&<TabCocina catalog={catalog} orders={orders} completed={completed} soundOn={soundOn} setSoundOn={setSoundOn} onMarkLine={setLinePrepared} onMarkAll={markOrderAllPrepared} onMarkLineCompleted={(id,lid,done,sub)=>updateCompleted(id,o=>({...o,lines:o.lines.map(l=>l.lid===lid?{...l,prepared:done,preparedCount:done?(l.preparedCount||0)+1:Math.max(0,(l.preparedCount||1)-1)}:l)}))} />}
             {tab==="dia"&&<TabDia catalog={catalog} completed={completed} dayTotal={dayTotal} openTotal={openTotal} openCount={orders.length} catBreakdown={catBreakdown} topItems={topItems} payBreakdown={payBreakdown} hourFlow={hourFlow}
               onEditCompleted={c=>setEditingCompletedId(c.id)} onTicket={c=>setTicketOrder(c)}
               onReopenCompleted={c=>setConfirmModal({title:"Regresar a cuentas abiertas",desc:`${c.name} volverá a Pedidos como cuenta abierta.`,confirmLabel:"Regresar a abiertas",onConfirm:()=>{reopenCompleted(c.id);setConfirmModal(null);}})}
@@ -2113,10 +2113,16 @@
     /* =========================================================
        TAB · COCINA (read-only, food only, mark prepared)
        ========================================================= */
-    function TabCocina({catalog, orders, soundOn, setSoundOn, onMarkLine, onMarkAll}){
-      const allKitchen=orders
+    function TabCocina({catalog, orders, completed, soundOn, setSoundOn, onMarkLine, onMarkAll, onMarkLineCompleted}){
+      // Include recently-charged orders that still have unprepared food items
+      // so kitchen sees them until everything is marked ready
+      const chargedPending=(completed||[])
+        .map(o=>({...o, lines: filterFoodLines(catalog,o), _charged:true}))
+        .filter(o=>o.lines.length>0 && !o.lines.every(l=>linePreparedFull(l)));
+      const allKitchen=[...orders
         .map(o=>({...o, lines: filterFoodLines(catalog,o)}))
-        .filter(o=>o.lines.length>0)
+        .filter(o=>o.lines.length>0),
+        ...chargedPending]
         .sort((a,b)=>(a.createdAt||0)-(b.createdAt||0));
       const pendingOrders=allKitchen.filter(o=>!o.lines.every(l=>linePreparedFull(l)));
       const doneOrders   =allKitchen.filter(o=>o.lines.every(l=>linePreparedFull(l)));
@@ -2159,7 +2165,7 @@
               </div>
               <div style={{display:"flex",flexDirection:"column",gap:6}}>
                 {grouped.map(({line:l,children})=><div key={l.lid}>
-                  <button onClick={()=>{ const realLid=l._subOf||l.lid; const realLine=o.lines.find(x=>x.lid===realLid); const curCount=realLine?linePreparedCount(realLine):0; const markDone=l._subOf?curCount<=l._subIdx:!linePreparedFull(realLine||l); onMarkLine(o.id,realLid,markDone,l._subIdx); }} className="la-tap" style={{width:"100%",display:"flex",alignItems:"flex-start",gap:10,background:(()=>{ if(l._subOf){ const rl=o.lines.find(x=>x.lid===l._subOf); return rl&&l._subIdx<linePreparedCount(rl)?"rgba(46,139,87,0.1)":C.bg; } return linePreparedFull(l)?"rgba(46,139,87,0.1)":C.bg; })(),border:(()=>{ if(l._subOf){ const rl=o.lines.find(x=>x.lid===l._subOf); return rl&&l._subIdx<linePreparedCount(rl)?`1.5px solid ${C.success}`:"1px solid #ece4dc"; } return linePreparedFull(l)?`1.5px solid ${C.success}`:"1px solid #ece4dc"; })(),borderRadius:9,padding:"9px 11px",cursor:"pointer",textAlign:"left"}}>
+                  <button onClick={()=>{ const realLid=l._subOf||l.lid; const realLine=o.lines.find(x=>x.lid===realLid); const curCount=realLine?linePreparedCount(realLine):0; const markDone=l._subOf?curCount<=l._subIdx:!linePreparedFull(realLine||l); (o._charged?onMarkLineCompleted:onMarkLine)(o.id,realLid,markDone,l._subIdx); }} className="la-tap" style={{width:"100%",display:"flex",alignItems:"flex-start",gap:10,background:(()=>{ if(l._subOf){ const rl=o.lines.find(x=>x.lid===l._subOf); return rl&&l._subIdx<linePreparedCount(rl)?"rgba(46,139,87,0.1)":C.bg; } return linePreparedFull(l)?"rgba(46,139,87,0.1)":C.bg; })(),border:(()=>{ if(l._subOf){ const rl=o.lines.find(x=>x.lid===l._subOf); return rl&&l._subIdx<linePreparedCount(rl)?`1.5px solid ${C.success}`:"1px solid #ece4dc"; } return linePreparedFull(l)?`1.5px solid ${C.success}`:"1px solid #ece4dc"; })(),borderRadius:9,padding:"9px 11px",cursor:"pointer",textAlign:"left"}}>
                     {(()=>{ const isDone=l._subOf?(()=>{ const rl=o.lines.find(x=>x.lid===l._subOf); return rl&&l._subIdx<linePreparedCount(rl); })():linePreparedFull(l); return <div style={{width:22,height:22,borderRadius:6,background:isDone?C.success:"transparent",border:isDone?"none":`1.5px solid ${C.muted}`,color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:"bold",flexShrink:0,marginTop:1}}>{isDone?"✓":""}</div>; })()}
                     <div style={{flex:1}}>
                       {(()=>{ const isDone=l._subOf?(()=>{ const rl=o.lines.find(x=>x.lid===l._subOf); return rl&&l._subIdx<linePreparedCount(rl); })():linePreparedFull(l); return <div style={{fontSize:14,fontWeight:"bold",textDecoration:isDone?"line-through":"none",opacity:isDone?0.6:1}}>{lineDisplayNameWith(catalog,l)}{l._label&&<span style={{fontSize:11,fontWeight:"normal",opacity:0.6,marginLeft:4}}>{l._label}</span>}</div>; })()}
