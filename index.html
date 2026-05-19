@@ -932,6 +932,30 @@
           return {...o, lines:newLines};
         }));
       }
+      // Same as setLinePrepared but operates on completed orders (charged before kitchen finishes)
+      function setLinePreparedCompleted(orderId, lid, markDone, subIdx){
+        updateCompleted(orderId, o=>{
+          const newLines=o.lines.map(l=>{
+            if(l.lid===lid){
+              let newCount;
+              if(subIdx!==undefined){
+                const cur=linePreparedCount(l);
+                newCount=markDone ? Math.min(l.qty, cur+1) : Math.max(0, cur-1);
+              } else {
+                newCount=markDone?l.qty:0;
+              }
+              return {...l, preparedCount:newCount, prepared:newCount>=l.qty};
+            }
+            if(l.opts?.parentLid===lid){
+              const childFull=subIdx===undefined&&markDone;
+              return {...l, preparedCount:childFull?l.qty:0, prepared:childFull};
+            }
+            return l;
+          });
+          return {...o, lines:newLines};
+        });
+      }
+
       function markOrderAllPrepared(orderId){
         setOrders(p=>p.map(o=>{ if(o.id!==orderId) return o;
           return {...o, lines: o.lines.map(l=>{ const it=catalog.itemMap[l.itemId]; if(!it||it.foodKind!=="food") return l; return {...l, preparedCount:l.qty, prepared:true}; })};
@@ -1098,7 +1122,7 @@
             {tab==="activos"&&<TabActivos catalog={catalog} orders={orders} profile={profile} canDelete={profile==="admin"||profile==="servicio"}
               onNew={()=>setNewAccountModal(true)} onTakeout={()=>setTakeoutModal(true)} onOpen={id=>setActiveOrderId(id)}
               onDelete={o=>setConfirmModal({title:"Eliminar cuenta",desc:`¿Eliminar la cuenta de ${o.name}?`,confirmLabel:"Eliminar",danger:true,onConfirm:()=>{deleteOrder(o.id);setConfirmModal(null);}})} />}
-            {tab==="cocina"&&<TabCocina catalog={catalog} orders={orders} completed={completed} soundOn={soundOn} setSoundOn={setSoundOn} onMarkLine={setLinePrepared} onMarkAll={markOrderAllPrepared} onMarkLineCompleted={(id,lid,done,sub)=>updateCompleted(id,o=>({...o,lines:o.lines.map(l=>l.lid===lid?{...l,prepared:done,preparedCount:done?(l.preparedCount||0)+1:Math.max(0,(l.preparedCount||1)-1)}:l)}))} />}
+            {tab==="cocina"&&<TabCocina catalog={catalog} orders={orders} completed={completed} soundOn={soundOn} setSoundOn={setSoundOn} onMarkLine={setLinePrepared} onMarkAll={markOrderAllPrepared} onMarkLineCompleted={setLinePreparedCompleted} />}
             {tab==="dia"&&<TabDia catalog={catalog} completed={completed} dayTotal={dayTotal} openTotal={openTotal} openCount={orders.length} catBreakdown={catBreakdown} topItems={topItems} payBreakdown={payBreakdown} hourFlow={hourFlow}
               onEditCompleted={c=>setEditingCompletedId(c.id)} onTicket={c=>setTicketOrder(c)}
               onReopenCompleted={c=>setConfirmModal({title:"Regresar a cuentas abiertas",desc:`${c.name} volverá a Pedidos como cuenta abierta.`,confirmLabel:"Regresar a abiertas",onConfirm:()=>{reopenCompleted(c.id);setConfirmModal(null);}})}
