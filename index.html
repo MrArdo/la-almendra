@@ -116,6 +116,8 @@
     function useFbKey(fbPath, lsKey, initialValue){
       const [val, setVal] = useState(initialValue);
       const skipNext = useRef(false);
+      const valRef = useRef(val);
+      valRef.current = val;
 
       useEffect(()=>{
         let ref;
@@ -123,10 +125,19 @@
           ref = getDb().ref(fbPath);
           ref.on("value", snap => {
             const raw = snap.val();
-            if(raw === null) return;
             if(skipNext.current){ skipNext.current=false; return; }
+            // Firebase strips empty arrays — when the remote was previously an
+            // array and now we receive null, the remote value is []. Use the
+            // current local value's type to decide whether null means "empty"
+            // or "no remote data yet" (e.g. brand-new database).
+            if(raw === null){
+              if(Array.isArray(valRef.current)){
+                setVal([]);
+                saveState(lsKey, []);
+              }
+              return;
+            }
             let remote = fbFixArrays(raw);
-            // If this path holds orders (arrays of order objects), normalize each one
             if(Array.isArray(remote)) remote = remote.map(item => item && typeof item==="object" && ("lines" in item || item.id) ? normalizeOrder(item) : item);
             else if(remote && typeof remote==="object" && Object.keys(remote).every(k=>/^\d+$/.test(k))) remote = normalizeOrders(remote);
             setVal(remote);
