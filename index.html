@@ -1,4 +1,4 @@
-<!DOCTYPE html> 
+<!DOCTYPE html>
 <html lang="es">
 <head>
   <meta charset="UTF-8" />
@@ -383,9 +383,10 @@
 
     function linePriceWith(catalog,line){
       const item=catalog.itemMap[line.itemId]; if(!item) return 0;
+      const opts=line.opts||{};
       let base=item.price||0;
-      if(item.sizes) base=item.sizes[line.opts.size||"chico"];
-      base+=optionsExtraPrice(item, line.opts);
+      if(item.sizes) base=item.sizes[opts.size||"chico"];
+      base+=optionsExtraPrice(item, opts);
       return base;
     }
     function lineSubtotalWith(catalog,line){ return linePriceWith(catalog,line)*(line.qty||0); }
@@ -439,12 +440,13 @@
 
     function lineDisplayNameWith(catalog,line){
       const item=catalog.itemMap[line.itemId]; if(!item) return "(eliminado)";
+      const opts=line.opts||{};
       let name=item.name; const parts=[];
-      if(line.opts.size) parts.push(line.opts.size==="chico"?"Chico":"Grande");
+      if(opts.size) parts.push(opts.size==="chico"?"Chico":"Grande");
       // All known options in catalog order
       if(item.options){
         item.options.forEach(o=>{
-          const val=line.opts[o.key];
+          const val=opts[o.key];
           if(val===undefined||val===null) return;
           if(o.type==="single"){ if(val) parts.push(val); }
           else { if(Array.isArray(val)&&val.length) parts.push(val.join(", ")); }
@@ -452,9 +454,9 @@
       }
       // Legacy keys from old saved orders (backwards compat)
       const knownOptKeys=new Set([...(item.options||[]).map(o=>o.key),"size","parentLid"]);
-      Object.keys(line.opts||{}).forEach(k=>{
+      Object.keys(opts).forEach(k=>{
         if(knownOptKeys.has(k)) return;
-        const v=line.opts[k]; if(!v) return;
+        const v=opts[k]; if(!v) return;
         if(k==="milk") parts.push(v==="entera"?"Leche entera":"Deslactosada");
         else if(Array.isArray(v)) parts.push(v.join(", "));
         else parts.push(String(v));
@@ -963,6 +965,16 @@
         broadcast("order-ready",{orderId,bulk:true});
         if(soundOn) playPing();
       }
+
+      // Toggle "preparing" state on an order (kitchen long-press to mark in progress)
+      // Searches in both orders and completed (charged orders still visible in kitchen)
+      function togglePreparing(orderId){
+        let found=false;
+        setOrders(p=>p.map(o=>{ if(o.id!==orderId) return o; found=true; return {...o, preparing: !o.preparing}; }));
+        if(!found){
+          setCompleted(p=>p.map(o=>{ if(o.id!==orderId) return o; return {...o, preparing: !o.preparing}; }));
+        }
+      }
       // Transfer items between open accounts
       // transfers: [{lid, qty}] — can be partial qty of a line
       function transferLines(fromId, toId, transfers){
@@ -1122,7 +1134,7 @@
             {tab==="activos"&&<TabActivos catalog={catalog} orders={orders} profile={profile} canDelete={profile==="admin"||profile==="servicio"}
               onNew={()=>setNewAccountModal(true)} onTakeout={()=>setTakeoutModal(true)} onOpen={id=>setActiveOrderId(id)}
               onDelete={o=>setConfirmModal({title:"Eliminar cuenta",desc:`¿Eliminar la cuenta de ${o.name}?`,confirmLabel:"Eliminar",danger:true,onConfirm:()=>{deleteOrder(o.id);setConfirmModal(null);}})} />}
-            {tab==="cocina"&&<TabCocina catalog={catalog} orders={orders} completed={completed} soundOn={soundOn} setSoundOn={setSoundOn} onMarkLine={setLinePrepared} onMarkAll={markOrderAllPrepared} onMarkLineCompleted={setLinePreparedCompleted} />}
+            {tab==="cocina"&&<TabCocina catalog={catalog} orders={orders} completed={completed} soundOn={soundOn} setSoundOn={setSoundOn} onMarkLine={setLinePrepared} onMarkAll={markOrderAllPrepared} onMarkLineCompleted={setLinePreparedCompleted} onTogglePreparing={togglePreparing} />}
             {tab==="dia"&&<TabDia catalog={catalog} completed={completed} dayTotal={dayTotal} openTotal={openTotal} openCount={orders.length} catBreakdown={catBreakdown} topItems={topItems} payBreakdown={payBreakdown} hourFlow={hourFlow}
               onEditCompleted={c=>setEditingCompletedId(c.id)} onTicket={c=>setTicketOrder(c)}
               onReopenCompleted={c=>setConfirmModal({title:"Regresar a cuentas abiertas",desc:`${c.name} volverá a Pedidos como cuenta abierta.`,confirmLabel:"Regresar a abiertas",onConfirm:()=>{reopenCompleted(c.id);setConfirmModal(null);}})}
@@ -1160,7 +1172,7 @@
         {dayDetail&&<DayDetailModal catalog={catalog} day={dayDetail} onClose={()=>setDayDetail(null)} />}
         {transferModal&&<TransferModal orders={orders} catalog={catalog} fromOrderId={transferModal.fromOrderId} onClose={()=>setTransferModal(null)} onConfirm={(toId,transfers)=>{ transferLines(transferModal.fromOrderId,toId,transfers); setTransferModal(null); }} />}
         {ticketOrder&&<TicketModal catalog={catalog} order={ticketOrder} onClose={()=>setTicketOrder(null)} />
-        }{folioSearch&&<FolioSearchModal completed={completed} catalog={catalog} onClose={()=>setFolioSearch(false)} onOpenTicket={o=>{setFolioSearch(false);setTicketOrder(o);}} />}
+        }{folioSearch&&<FolioSearchModal completed={completed} dayRecords={dayRecords} catalog={catalog} onClose={()=>setFolioSearch(false)} onOpenTicket={o=>{setFolioSearch(false);setTicketOrder(o);}} />}
 
         {toast&&<div key={toast.id} style={{position:"fixed",bottom:92,left:16,right:16,maxWidth:528,margin:"0 auto",background:C.dark,color:"#fff",borderRadius:12,zIndex:50,fontSize:14,boxShadow:"0 4px 16px rgba(0,0,0,0.25)",overflow:"hidden",animation:"laToastUp 0.3s ease"}}>
           {toast.undoFn&&<div style={{position:"absolute",top:0,left:0,bottom:0,background:"rgba(232,145,138,0.32)",animation:"laProgress 4s linear forwards"}} />}
@@ -1805,7 +1817,7 @@
     /* =========================================================
        FOLIO SEARCH MODAL
        ========================================================= */
-    function FolioSearchModal({completed, catalog, onClose, onOpenTicket}){
+    function FolioSearchModal({completed, dayRecords, catalog, onClose, onOpenTicket}){
       const [query,setQuery]=useState("");
       const [openDays,setOpenDays]=useState({}); // {dayKey: bool}
 
@@ -1821,16 +1833,32 @@
           if(!buckets[dk]) buckets[dk]={label:dk===todayDk?"Hoy":fmtShortDate(o.completedAt),date:o.completedAt||Date.now(),tickets:[]};
           buckets[dk].tickets.push({folio:o.folio||"S/F",orderId:o.id,name:o.name,mesa:o.mesa,type:o.type,completedAt:o.completedAt,order:o});
         });
-        // Past days from persisted store
+        // Past days from dayRecords (synced via Firebase across all devices)
+        (dayRecords||[]).forEach(record=>{
+          if((record.date||0)<sevenDaysAgo) return;
+          const dk=dayKey(record.date);
+          if(buckets[dk]) return; // today (active session) already covered
+          const tickets=(record.orders||[]).map(o=>({
+            folio:o.folio||"S/F",
+            orderId:o.id,
+            name:o.name,
+            mesa:o.mesa,
+            type:o.type,
+            completedAt:o.completedAt||record.date,
+            order:o
+          }));
+          if(tickets.length) buckets[dk]={label:fmtShortDate(record.date),date:record.date,tickets};
+        });
+        // Legacy: also pull from old localStorage ticket store (for tickets created before Firebase migration)
         const pastDays=loadAllTicketDays();
         pastDays.forEach(day=>{
           if((day.date||0)<sevenDaysAgo) return;
           const dk=dayKey(day.date);
-          if(buckets[dk]) return; // today already covered by session
+          if(buckets[dk]) return; // already covered by session or dayRecords
           buckets[dk]={label:fmtShortDate(day.date),date:day.date,tickets:day.tickets.map(t=>({...t,order:null}))};
         });
         return Object.values(buckets).sort((a,b)=>b.date-a.date);
-      },[completed]);
+      },[completed,dayRecords]);
 
       // Filter by query
       const q=query.trim().toUpperCase();
@@ -1982,18 +2010,21 @@
       })();
       const cardBg = prepStats.total>0 && prepStats.prepared===prepStats.total ? "#f0faf4"
                    : prepStats.total>0 && prepStats.any>0 ? "#fffbf0"
+                   : order.preparing ? "#FFF6D6"
                    : C.card;
       const cardBorder = prepStats.total>0 && prepStats.prepared===prepStats.total
                    ? `1.5px solid rgba(46,139,87,0.35)`
                    : prepStats.total>0 && prepStats.any>0
                    ? `1.5px solid rgba(212,162,76,0.35)`
+                   : order.preparing ? "1.5px solid #E5B83A"
                    : takeout ? `1.5px dashed ${C.dark}` : "1.5px solid #e5ddd5";
       return <div className="la-card-tap la-row" style={{background:cardBg,borderRadius:12,padding:"12px 14px",marginBottom:10,border:cardBorder,position:"relative",animationDelay:`${index*0.05}s`,transition:"background 0.3s ease,border-color 0.3s ease"}}>
         <div onClick={onOpen} style={{cursor:"pointer"}}>
-          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4,flexWrap:"wrap"}}>
             {takeout?<span style={{background:C.pinkPill,color:C.dark,fontSize:11,fontWeight:"bold",padding:"3px 8px",borderRadius:20}}>🛍️ Para llevar</span>:order.mesa?<span style={{background:C.pinkPill,color:C.dark,fontSize:11,fontWeight:"bold",padding:"3px 8px",borderRadius:20}}>Mesa {order.mesa}</span>:null}
             {prepStats.total>0 && prepStats.prepared===prepStats.total && <span style={{background:C.success,color:"#fff",fontSize:11,fontWeight:"bold",padding:"3px 8px",borderRadius:20}}>✓ Todo listo</span>}
             {prepStats.total>0 && prepStats.prepared>0 && prepStats.prepared<prepStats.total && <span style={{background:C.warn,color:"#fff",fontSize:11,fontWeight:"bold",padding:"3px 8px",borderRadius:20}}>{prepStats.prepared}/{prepStats.total} listo</span>}
+            {order.preparing && !(prepStats.total>0 && prepStats.prepared>0) && <span style={{background:"#E5B83A",color:"#fff",fontSize:11,fontWeight:"bold",padding:"3px 8px",borderRadius:20}}>⏳ Preparando</span>}
             {canDelete && <button onClick={e=>{e.stopPropagation();onDelete();}} className="la-tap" style={{marginLeft:"auto",background:"none",border:"none",cursor:"pointer",fontSize:16,color:C.muted,padding:2}}>🗑️</button>}
           </div>
           <div style={{fontSize:20,fontWeight:"bold"}}>{order.name}</div>
@@ -2137,7 +2168,71 @@
     /* =========================================================
        TAB · COCINA (read-only, food only, mark prepared)
        ========================================================= */
-    function TabCocina({catalog, orders, completed, soundOn, setSoundOn, onMarkLine, onMarkAll, onMarkLineCompleted}){
+    /* =========================================================
+       COCINA CARD — wraps each kitchen order with long-press handling
+       Long-press anywhere on the card (not on buttons) for 600ms to
+       toggle "preparing" state. Shows a fill bar during the press.
+       ========================================================= */
+    const LONG_PRESS_MS = 600;
+    function CocinaCard({order, cardBg, cardBorder, canTogglePreparing, onTogglePreparing, children}){
+      const [pressProgress, setPressProgress] = useState(0); // 0..1
+      const timerRef = useRef(null);
+      const rafRef = useRef(null);
+      const startRef = useRef(0);
+      const firedRef = useRef(false);
+
+      function clearPress(){
+        if(timerRef.current){ clearTimeout(timerRef.current); timerRef.current=null; }
+        if(rafRef.current){ cancelAnimationFrame(rafRef.current); rafRef.current=null; }
+        setPressProgress(0);
+      }
+
+      function startPress(e){
+        if(!canTogglePreparing) return;
+        // Ignore presses originating on buttons/inputs (checkbox interactions)
+        const t=e.target;
+        if(t.closest("button,input,a,[role='button']")) return;
+        firedRef.current=false;
+        startRef.current=Date.now();
+        // Animate the progress bar via RAF
+        const tick=()=>{
+          const elapsed=Date.now()-startRef.current;
+          const pct=Math.min(1, elapsed/LONG_PRESS_MS);
+          setPressProgress(pct);
+          if(pct<1) rafRef.current=requestAnimationFrame(tick);
+        };
+        rafRef.current=requestAnimationFrame(tick);
+        timerRef.current=setTimeout(()=>{
+          firedRef.current=true;
+          onTogglePreparing(order.id);
+          clearPress();
+          // Haptic on mobile
+          try{ navigator.vibrate?.(30); }catch{}
+        }, LONG_PRESS_MS);
+      }
+
+      function endPress(){ clearPress(); }
+
+      useEffect(()=>()=>clearPress(), []);
+
+      const progressOverlay = pressProgress>0 && <div style={{
+        position:"absolute", left:0, top:0, bottom:0,
+        width:`${pressProgress*100}%`,
+        background:"rgba(229,184,58,0.18)",
+        pointerEvents:"none",
+        transition:"none",
+        borderRadius:"12px 0 0 12px",
+      }} />;
+
+      return <div className="la-row" style={{position:"relative",background:cardBg,borderRadius:12,padding:"12px 14px",marginBottom:10,border:cardBorder,transition:"background 0.3s ease",overflow:"hidden",userSelect:pressProgress>0?"none":"auto",cursor:canTogglePreparing?"pointer":"default"}}
+        onMouseDown={startPress} onMouseUp={endPress} onMouseLeave={endPress}
+        onTouchStart={startPress} onTouchEnd={endPress} onTouchCancel={endPress}>
+        {progressOverlay}
+        <div style={{position:"relative"}}>{children}</div>
+      </div>;
+    }
+
+    function TabCocina({catalog, orders, completed, soundOn, setSoundOn, onMarkLine, onMarkAll, onMarkLineCompleted, onTogglePreparing}){
       // Include recently-charged orders that still have unprepared food items
       // so kitchen sees them until everything is marked ready
       const chargedPending=(completed||[])
@@ -2172,14 +2267,19 @@
         o.lines.forEach(l=>{ if(l.opts?.parentLid){ if(!childrenByReal[l.opts.parentLid]) childrenByReal[l.opts.parentLid]=[]; childrenByReal[l.opts.parentLid].push(l); } });
         const grouped=rootExpanded.map(l=>({line:l, children: l._subIdx>0?[]:(childrenByReal[l._subOf||l.lid]||[])}));
         const allReady=o.lines.every(l=>l.prepared);
+        const anyPrepared=o.lines.some(l=>linePreparedCount(l)>0);
         const minutesAgo=Math.floor((Date.now()-o.createdAt)/60000);
-        const cardBg=allReady?"#f0faf4":C.card;
-        const cardBorder=allReady?`1.5px solid rgba(46,139,87,0.4)`:"1.5px solid #e5ddd5";
-        return <div key={o.id} className="la-row" style={{background:cardBg,borderRadius:12,padding:"12px 14px",marginBottom:10,border:cardBorder,transition:"background 0.3s ease"}}>
+        // Visual states: ready (green) > preparing (yellow) > default
+        const cardBg=allReady?"#f0faf4":(o.preparing?"#FFF6D6":C.card);
+        const cardBorder=allReady?`1.5px solid rgba(46,139,87,0.4)`:(o.preparing?"1.5px solid #E5B83A":"1.5px solid #e5ddd5");
+        // Long-press only allows toggling OFF if no items have been prepared yet
+        const canTogglePreparing=!allReady && (!o.preparing || !anyPrepared);
+        return <CocinaCard key={o.id} order={o} cardBg={cardBg} cardBorder={cardBorder} canTogglePreparing={canTogglePreparing} onTogglePreparing={onTogglePreparing}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8}}>
                 <div>
-                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:2}}>
+                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:2,flexWrap:"wrap"}}>
                     {o.type==="llevar"?<span style={{background:C.pinkPill,color:C.dark,fontSize:10.5,fontWeight:"bold",padding:"2px 7px",borderRadius:18}}>🛍️ Para llevar</span>:o.mesa?<span style={{background:C.pinkPill,color:C.dark,fontSize:10.5,fontWeight:"bold",padding:"2px 7px",borderRadius:18}}>Mesa {o.mesa}</span>:null}
+                    {!allReady&&o.preparing&&<span style={{background:"#E5B83A",color:"#fff",fontSize:10.5,fontWeight:"bold",padding:"2px 7px",borderRadius:18}}>⏳ Preparando</span>}
                     {allReady&&<span style={{background:C.success,color:"#fff",fontSize:10.5,fontWeight:"bold",padding:"2px 7px",borderRadius:18}}>✓ Todo listo</span>}
                   </div>
                   <div style={{fontSize:18,fontWeight:"bold"}}>{o.name}</div>
@@ -2204,7 +2304,7 @@
                   </div>)}
                 </div>)}
               </div>
-            </div>;
+            </CocinaCard>;
         }
       return <div className="la-tabpad">
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
@@ -2298,7 +2398,7 @@
     function HourBarChart({buckets, accent=true}){
       // Only render the range with activity (6am–11pm if no data falls outside).
       const active=buckets.filter(b=>b.count>0);
-      let from=6, to=22;
+      let from=8, to=18;
       if(active.length){
         from=Math.min(from,Math.min(...active.map(b=>b.h)));
         to=Math.max(to,Math.max(...active.map(b=>b.h)));
@@ -2420,51 +2520,40 @@
         const card=cardRef.current;
         if(!card||!window.domtoimage){console.error("dom-to-image not loaded");return;}
         setExporting(true);
-
-        // Temporarily transform card to desktop layout (680px + grid 2-col).
-        // Save current inline styles so we can restore them after capture.
-        const body=card.querySelector("[data-report-body]");
-        const leftCols=card.querySelectorAll(".la-report-col-left");
-        const rightCols=card.querySelectorAll(".la-report-col-right");
-        const saved={
-          cardWidth:card.style.width,
-          cardMaxWidth:card.style.maxWidth,
-          cardTransform:card.style.transform,
-          bodyDisplay:body?.style.display,
-          bodyCols:body?.style.gridTemplateColumns,
-          bodyGap:body?.style.gap,
-          bodyFlow:body?.style.gridAutoFlow,
-          left:[...leftCols].map(el=>el.style.gridColumn),
-          right:[...rightCols].map(el=>el.style.gridColumn),
-        };
+        // Clone the card into a hidden container so the original never moves or breaks.
+        // This avoids the "blank screen / interface frozen" bug on tall reports (week/month).
+        const EXPORT_W=680;
+        const container=document.createElement("div");
+        container.style.cssText="position:fixed;top:0;left:-9999px;width:"+EXPORT_W+"px;z-index:-1;visibility:hidden;";
+        const clone=card.cloneNode(true);
+        clone.style.width=EXPORT_W+"px";
+        clone.style.maxWidth=EXPORT_W+"px";
+        clone.style.transform="none";
+        clone.style.borderRadius="14px";
+        clone.style.overflow="hidden";
+        // Force desktop 2-col grid layout on the clone
+        const cloneBody=clone.querySelector("[data-report-body]");
+        if(cloneBody){
+          cloneBody.style.display="grid";
+          cloneBody.style.gridTemplateColumns="1fr 1fr";
+          cloneBody.style.gap="0 24px";
+          cloneBody.style.gridAutoFlow="dense";
+        }
+        clone.querySelectorAll(".la-report-col-left").forEach(el=>{el.style.gridColumn="1";});
+        clone.querySelectorAll(".la-report-col-right").forEach(el=>{el.style.gridColumn="2";});
+        container.appendChild(clone);
+        document.body.appendChild(container);
         try{
-          const EXPORT_W=680;
-          // Resize to desktop width and shift visually off-screen with transform
-          // (NOT position:fixed/left:-9999px — that breaks dom-to-image's geometry
-          // measurement and yields a blank PNG). Transform keeps the element in
-          // its normal layout flow so getBoundingClientRect returns valid metrics.
-          card.style.width=EXPORT_W+"px";
-          card.style.maxWidth=EXPORT_W+"px";
-          card.style.transform="translateX(-200vw)";
-          if(body){
-            body.style.display="grid";
-            body.style.gridTemplateColumns="1fr 1fr";
-            body.style.gap="0 24px";
-            body.style.gridAutoFlow="dense";
-          }
-          leftCols.forEach(el=>{el.style.gridColumn="1";});
-          rightCols.forEach(el=>{el.style.gridColumn="2";});
-          // Wait for layout + paint to complete before capture
+          // Wait for layout + paint
           await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
-          await new Promise(r=>setTimeout(r,50));
-          // Capture using the card's actual rendered dimensions
-          const captureH=card.offsetHeight;
-          const dataUrl=await window.domtoimage.toPng(card,{
+          await new Promise(r=>setTimeout(r,80));
+          const captureH=clone.offsetHeight;
+          const dataUrl=await window.domtoimage.toPng(clone,{
             scale:2,
             bgcolor:"#FAF3EE",
             width:EXPORT_W,
             height:captureH,
-            style:{margin:0,padding:card.style.padding||"22px 24px",transform:"none"}
+            style:{margin:0,padding:"22px 24px",transform:"none"}
           });
           const link=document.createElement("a");
           link.download=exportId+".png";
@@ -2472,19 +2561,8 @@
           document.body.appendChild(link); link.click(); document.body.removeChild(link);
         }catch(e){
           console.error("export failed",e);
-        } finally {
-          // Restore original styles
-          card.style.width=saved.cardWidth;
-          card.style.maxWidth=saved.cardMaxWidth;
-          card.style.transform=saved.cardTransform;
-          if(body){
-            body.style.display=saved.bodyDisplay||"";
-            body.style.gridTemplateColumns=saved.bodyCols||"";
-            body.style.gap=saved.bodyGap||"";
-            body.style.gridAutoFlow=saved.bodyFlow||"";
-          }
-          leftCols.forEach((el,i)=>{el.style.gridColumn=saved.left[i]||"";});
-          rightCols.forEach((el,i)=>{el.style.gridColumn=saved.right[i]||"";});
+        }finally{
+          document.body.removeChild(container);
           setExporting(false);
         }
       }
