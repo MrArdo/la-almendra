@@ -906,13 +906,20 @@
         showToast(`${c.name} regresó a cuentas abiertas`,()=>{ setOrders(p=>p.filter(o=>o.id!==r.id)); setCompleted(p=>[c,...p]); });
       }
       function terminarDia(){
-        const all=[...orders.map(o=>({...o,completedAt:Date.now(),payment:{method:"efectivo",tipMode:"none",tipValue:0}})),...completed];
-        if(all.length){
-          const total=all.reduce((s,o)=>s+orderTotalWith(catalog,o),0);
-          setDayRecords(p=>[...p,{key:dayKey(Date.now()),date:Date.now(),total,count:all.length,orders:all}]);
+        // Archive only paid orders (completed). Unpaid orders (orders) stay alive
+        // and roll over to the next day — they'll count toward the report of the
+        // day they're actually charged, based on their completedAt timestamp.
+        if(completed.length){
+          const total=completed.reduce((s,o)=>s+orderTotalWith(catalog,o),0);
+          setDayRecords(p=>[...p,{key:dayKey(Date.now()),date:Date.now(),total,count:completed.length,orders:completed}]);
         }
-        setOrders([]); setCompleted([]);
-        showToast("Día terminado y archivado");
+        setCompleted([]);
+        // orders stays untouched — pending accounts roll over to tomorrow
+        const pendingCount=orders.length;
+        const msg=pendingCount>0
+          ? `Día terminado. ${pendingCount} cuenta${pendingCount===1?"":"s"} pendiente${pendingCount===1?"":"s"} pasa${pendingCount===1?"":"n"} al día siguiente.`
+          : "Día terminado y archivado";
+        showToast(msg);
       }
       // Kitchen action
       // subIdx: which unit to toggle (0-based). If undefined, toggles all units.
@@ -1154,7 +1161,13 @@
               onCloseAll={()=>setConfirmModal({title:"Cerrar todas las cuentas",desc:`Se cerrarán ${orders.length} cuentas. Estas cuentas no llevarán propina.`,confirmLabel:"Confirmar",countdown:5,onConfirm:()=>{closeAllAccounts();setConfirmModal(null);}})}
               onDeleteCompleted={c=>setConfirmModal({title:"Eliminar orden",desc:`¿Eliminar la orden de ${c.name}?`,confirmLabel:"Eliminar",danger:true,countdown:3,onConfirm:()=>{deleteCompleted(c.id);setConfirmModal(null);}})}
               onReport={()=>setReportModal("day")}
-              onTerminar={()=>setConfirmModal({title:"Terminar día",desc:"Esta acción es irreversible. Se reiniciará el día y los datos se archivarán.",confirmLabel:"Terminar día",danger:true,countdown:5,onConfirm:()=>{terminarDia();setConfirmModal(null);}})} />}
+              onTerminar={()=>{
+                const pending=orders.length;
+                const desc=pending>0
+                  ? `Esta acción es irreversible. Se archivarán los pedidos cobrados y ${pending} cuenta${pending===1?"":"s"} pendiente${pending===1?"":"s"} pasará${pending===1?"":"n"} al día siguiente para cobrarse después.`
+                  : "Esta acción es irreversible. Se reiniciará el día y los datos se archivarán.";
+                setConfirmModal({title:"Terminar día",desc,confirmLabel:"Terminar día",danger:true,countdown:5,onConfirm:()=>{terminarDia();setConfirmModal(null);}});
+              }} />}
             {tab==="semana"&&<TabSemana catalog={catalog} weekDays={weekDays} weekTotal={weekTotal} weekCount={weekCount} curWeekStart={curWeekStart} onReport={()=>setReportModal("week")} onDayDetail={d=>setDayDetail(d)} />}
             {tab==="mes"&&<TabMes catalog={catalog} monthWeeks={monthWeeks} monthTotal={monthTotal} monthCount={monthCount} curMonth={curMonth} curYear={curYear} onReport={()=>setReportModal("month")} onWeekDetail={w=>setWeekDetail(w)} />}
             {tab==="catalogo"&&<TabCatalogo catalog={catalog} setCatalogRaw={setCatalogRaw} showToast={showToast} />}
