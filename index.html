@@ -420,13 +420,27 @@
     // Top N most ordered items across a list of orders
     function topItemsWith(catalog, orders, limit=5){
       const m={};
-      orders.forEach(o=>o.lines.forEach(l=>{
-        const k=lineDisplayNameWith(catalog,l);
-        if(!m[k]) m[k]={name:k,qty:0,total:0};
-        m[k].qty+=l.qty;
-        m[k].total+=lineSubtotalWith(catalog,l);
+      orders.forEach(o=>(Array.isArray(o?.lines)?o.lines:[]).forEach(l=>{
+        // Skip "extra" child lines (acompañantes vinculados a un platillo padre)
+        if(l.opts?.parentLid) return;
+        const it=catalog.itemMap[l.itemId];
+        if(!it) return;
+        const key=l.itemId; // group by base product, not by full display name
+        const cat=catalog.catMap[it.catId]?.name||"—";
+        const variantName=lineDisplayNameWith(catalog,l); // includes options like "(Roja)"
+        const subtotal=lineSubtotalWith(catalog,l);
+        if(!m[key]) m[key]={itemId:l.itemId, name:it.name, cat, qty:0, total:0, variants:{}};
+        m[key].qty+=l.qty;
+        m[key].total+=subtotal;
+        // Aggregate variant breakdown
+        if(!m[key].variants[variantName]) m[key].variants[variantName]={name:variantName, qty:0, total:0};
+        m[key].variants[variantName].qty+=l.qty;
+        m[key].variants[variantName].total+=subtotal;
       }));
-      return Object.values(m).sort((a,b)=>b.qty-a.qty).slice(0,limit);
+      return Object.values(m)
+        .map(x=>({...x, variants: Object.values(x.variants).sort((a,b)=>b.qty-a.qty)}))
+        .sort((a,b)=>b.qty-a.qty)
+        .slice(0,limit);
     }
 
     // Aggregates totals split by payment method + tip total
@@ -1039,7 +1053,7 @@
       const dayTotal=completed.reduce((s,o)=>s+orderTotalWith(catalog,o),0);
       const openTotal=orders.reduce((s,o)=>s+orderTotalWith(catalog,o),0);
       const catBreakdown=useMemo(()=>{ const m={}; completed.forEach(o=>(Array.isArray(o?.lines)?o.lines:[]).forEach(l=>{ const it=catalog.itemMap[l.itemId]; const c=it?catalog.catMap[it.catId]?.name||"—":"(eliminado)"; if(!m[c]) m[c]={cat:c,qty:0,total:0}; m[c].qty+=l.qty; m[c].total+=lineSubtotalWith(catalog,l); })); return Object.values(m).sort((a,b)=>b.total-a.total); },[completed,catalog]);
-      const topItems=useMemo(()=>{ const m={}; completed.forEach(o=>(Array.isArray(o?.lines)?o.lines:[]).forEach(l=>{ const k=lineDisplayNameWith(catalog,l); const it=catalog.itemMap[l.itemId]; const c=it?catalog.catMap[it.catId]?.name||"—":"—"; if(!m[k]) m[k]={name:k,cat:c,qty:0,total:0}; m[k].qty+=l.qty; m[k].total+=lineSubtotalWith(catalog,l); })); return Object.values(m).sort((a,b)=>b.qty-a.qty); },[completed,catalog]);
+      const topItems=useMemo(()=>topItemsWith(catalog,completed,99),[completed,catalog]);
       const payBreakdown=useMemo(()=>{
         let ef=0,ta=0,tr=0,pr=0,pe=0,pt=0,ptr=0;
         completed.forEach(o=>{ const t=orderTotalWith(catalog,o); const tip=resolveTip(t,o.payment); const m=o.payment?.method||"efectivo";
@@ -2357,6 +2371,51 @@
     }
 
     /* =========================================================
+       TOP ITEMS TABLE — expandable list of best-selling items.
+       Each row groups variants of the same base product (e.g. all
+       "Chilaquiles al gusto" regardless of Roja/Verde). Click to
+       expand a row and see the breakdown by variant.
+       ========================================================= */
+    function TopItemsTable({items, max=5}){
+      const [expanded, setExpanded] = useState({});
+      const visible = items.slice(0, max);
+      const headerCell = {fontSize:10.5,fontWeight:"bold",textTransform:"uppercase",letterSpacing:0.5,color:"#fff",padding:"8px 10px"};
+      const bodyCell = {fontSize:13,padding:"8px 10px",color:C.dark};
+      return <div style={{border:"1px solid #e5ddd5",borderRadius:10,overflow:"hidden"}}>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 90px 60px 90px",background:C.dark}}>
+          <div style={{...headerCell}}>Item</div>
+          <div style={{...headerCell,textAlign:"left"}}>Categoría</div>
+          <div style={{...headerCell,textAlign:"center"}}>Vend.</div>
+          <div style={{...headerCell,textAlign:"right"}}>Total</div>
+        </div>
+        {visible.map((it,idx)=>{
+          const hasVariants = it.variants && it.variants.length > 1;
+          const isOpen = !!expanded[it.itemId];
+          return <div key={it.itemId} style={{borderTop:"1px solid #f0e8e0",background:"#fff"}}>
+            <div onClick={hasVariants ? ()=>setExpanded(p=>({...p,[it.itemId]:!p[it.itemId]})) : undefined}
+                 style={{display:"grid",gridTemplateColumns:"1fr 90px 60px 90px",alignItems:"center",cursor:hasVariants?"pointer":"default",background:isOpen?"#fdf8f3":"transparent",transition:"background 0.15s"}}>
+              <div style={{...bodyCell,fontWeight:hasVariants?"bold":"normal",display:"flex",alignItems:"center",gap:6}}>
+                {hasVariants && <span style={{display:"inline-block",fontSize:9,color:C.muted,transform:isOpen?"rotate(90deg)":"rotate(0)",transition:"transform 0.15s"}}>▶</span>}
+                {it.name}
+              </div>
+              <div style={{...bodyCell,fontSize:12,color:C.muted}}>{it.cat}</div>
+              <div style={{...bodyCell,textAlign:"center",fontWeight:"bold"}}>{it.qty}</div>
+              <div style={{...bodyCell,textAlign:"right",fontWeight:"bold"}}>{fmt(it.total)}</div>
+            </div>
+            {hasVariants && isOpen && <div style={{background:"#fdf8f3",borderTop:"1px dashed #f0e8e0",padding:"4px 0 8px 28px"}}>
+              {it.variants.map((v,vi)=><div key={vi} style={{display:"grid",gridTemplateColumns:"1fr 90px 60px 90px",alignItems:"center",fontSize:12,color:C.muted,padding:"3px 0"}}>
+                <div style={{paddingLeft:8}}>· {v.name}</div>
+                <div></div>
+                <div style={{textAlign:"center"}}>{v.qty}</div>
+                <div style={{textAlign:"right",paddingRight:10}}>{fmt(v.total)}</div>
+              </div>)}
+            </div>}
+          </div>;
+        })}
+      </div>;
+    }
+
+    /* =========================================================
        TAB · DÍA
        ========================================================= */
     function TabDia({catalog, completed, dayTotal, openTotal, openCount, catBreakdown, topItems, payBreakdown, hourFlow,
@@ -2399,7 +2458,7 @@
         {openCount>0?<div style={{fontSize:11.5,color:C.muted,fontStyle:"italic",marginBottom:22,textAlign:"center"}}>Estas cuentas no llevarán propina</div>:<div style={{marginBottom:22}} />}
         <div className="la-grid-2">
           {catBreakdown.length>0&&<div><h3 style={{...sectionH,marginTop:0}}>Desglose por categoría</h3><DataTable headers={["Categoría","Cant.","Total"]} rows={catBreakdown.map(c=>[c.cat,c.qty,fmt(c.total)])} aligns={["left","center","right"]} /></div>}
-          {topItems.length>0&&<div><h3 style={{...sectionH,marginTop:0}}>Items más pedidos</h3><DataTable headers={["Item","Categoría","Vend.","Total"]} rows={topItems.map(i=>[i.name,i.cat,i.qty,fmt(i.total)])} aligns={["left","left","center","right"]} small /></div>}
+          {topItems.length>0&&<div><h3 style={{...sectionH,marginTop:0}}>Items más pedidos</h3><TopItemsTable items={topItems} /></div>}
           {hasData&&<div className="la-span-2">
             <h3 style={sectionH}>Órdenes completadas</h3>
             <div className="la-completed-grid">{shown.map((c,i)=><CompletedCard key={c.id} catalog={catalog} order={c} index={i} onDelete={()=>onDeleteCompleted(c)} onEdit={()=>onEditCompleted(c)} onReopen={()=>onReopenCompleted(c)} onTicket={()=>onTicket(c)} />)}</div>
@@ -2550,7 +2609,7 @@
         // This avoids the "blank screen / interface frozen" bug on tall reports (week/month).
         const EXPORT_W=680;
         const container=document.createElement("div");
-        container.style.cssText="position:fixed;top:0;left:-9999px;width:"+EXPORT_W+"px;z-index:-1;visibility:hidden;";
+        container.style.cssText="position:fixed;top:0;left:-9999px;width:"+EXPORT_W+"px;z-index:-1;pointer-events:none;";
         const clone=card.cloneNode(true);
         clone.style.width=EXPORT_W+"px";
         clone.style.maxWidth=EXPORT_W+"px";
@@ -2644,7 +2703,16 @@
         <ReportSectionLabel>{title}</ReportSectionLabel>
         {rows.map((r,i)=><div key={i} style={{display:"flex",alignItems:"center",gap:10,padding:"7px 0",borderBottom:"1px solid #ece4dc"}}>
           <div style={{width:22,height:22,borderRadius:"50%",background:C.pink,color:C.dark,fontSize:12,fontWeight:"bold",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>{i+1}</div>
-          <div style={{flex:1,fontSize:13,fontWeight:"bold",minWidth:0}}>{r.name}</div>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{fontSize:13,fontWeight:"bold"}}>{r.name}</div>
+            {r.variants && r.variants.length>1 && <div style={{fontSize:10.5,color:C.muted,marginTop:2,lineHeight:1.4}}>
+              {r.variants.map((v,vi)=>{
+                // Strip the base name from the variant label to show only the variant tag
+                const tag=v.name.replace(r.name,"").replace(/^\s*\(?\s*|\s*\)?\s*$/g,"").trim()||v.name;
+                return <span key={vi}>{vi>0?" · ":""}{tag} ×{v.qty}</span>;
+              })}
+            </div>}
+          </div>
           <div style={{textAlign:"right",flexShrink:0}}>
             <div style={{fontSize:12,fontWeight:"bold"}}>{"×"}{r.qty}</div>
             <div style={{fontSize:11,color:C.muted}}>{fmt(r.total)}</div>
