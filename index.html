@@ -223,6 +223,9 @@
        ========================================================= */
     // Shared option factories (used both by default catalog and migration)
     const milkOpt=()=>({key:"milk",label:"Tipo de leche",type:"single",required:true,choices:["Entera","Deslactosada"]});
+    // Glass-cup BYO discount: the customer brings their own reusable glass (one she sold previously).
+    // Applies $5 off when the choice is "Sí, trae vaso" — negative price via choice.price.
+    const glassCupOpt=()=>({key:"vidrio",label:"¿Trae vaso de vidrio?",type:"single",required:false,choices:["No",{label:"Sí, trae vaso (-$5)",price:-5}]});
 
     function buildDefaultCatalog(){
       const cats=[
@@ -258,16 +261,16 @@
         {id:"gall-avellana",catId:"cat-dulce",name:"Galleta de crema de avellana",price:19,foodKind:"food"},
         {id:"gall-choco",catId:"cat-dulce",name:"Galleta de chispas de chocolate",price:19,foodKind:"food"},
         {id:"bola-helado",catId:"cat-dulce",name:"Bola de helado",price:15,foodKind:"food",options:[{key:"sabor",label:"Elige tu sabor",type:"single",required:true,choices:["Chocolate","Vainilla fresa"]}]},
-        {id:"fria-americano",catId:"cat-frias",name:"Americano frío",sizes:{chico:45,grande:49},foodKind:"drink"},
-        {id:"fria-latte",catId:"cat-frias",name:"Latte frío",sizes:{chico:49,grande:55},options:[milkOpt()],foodKind:"drink"},
-        {id:"fria-vainilla",catId:"cat-frias",name:"Vainilla latte frío",sizes:{chico:59,grande:65},options:[milkOpt()],foodKind:"drink"},
-        {id:"fria-caramelo",catId:"cat-frias",name:"Caramelo latte frío",sizes:{chico:59,grande:65},options:[milkOpt()],foodKind:"drink"},
-        {id:"fria-matcha",catId:"cat-frias",name:"Matcha frío",sizes:{chico:65,grande:69},options:[milkOpt()],foodKind:"drink"},
-        {id:"fria-taro",catId:"cat-frias",name:"Taro frío",sizes:{chico:59,grande:65},options:[milkOpt()],foodKind:"drink"},
-        {id:"fria-chai",catId:"cat-frias",name:"Chai frío",sizes:{chico:59,grande:65},options:[milkOpt()],foodKind:"drink"},
-        {id:"frappe-cafe",catId:"cat-frap",name:"Frappé de café",sizes:{chico:59,grande:65},foodKind:"drink"},
-        {id:"frappe-fresa",catId:"cat-frap",name:"Frappé de fresa",sizes:{chico:59,grande:65},foodKind:"drink"},
-        {id:"frappe-oreo",catId:"cat-frap",name:"Frappé de oreo",sizes:{chico:59,grande:65},foodKind:"drink"},
+        {id:"fria-americano",catId:"cat-frias",name:"Americano frío",sizes:{chico:45,grande:49},foodKind:"drink",options:[glassCupOpt()]},
+        {id:"fria-latte",catId:"cat-frias",name:"Latte frío",sizes:{chico:49,grande:55},options:[milkOpt(),glassCupOpt()],foodKind:"drink"},
+        {id:"fria-vainilla",catId:"cat-frias",name:"Vainilla latte frío",sizes:{chico:59,grande:65},options:[milkOpt(),glassCupOpt()],foodKind:"drink"},
+        {id:"fria-caramelo",catId:"cat-frias",name:"Caramelo latte frío",sizes:{chico:59,grande:65},options:[milkOpt(),glassCupOpt()],foodKind:"drink"},
+        {id:"fria-matcha",catId:"cat-frias",name:"Matcha frío",sizes:{chico:65,grande:69},options:[milkOpt(),glassCupOpt()],foodKind:"drink"},
+        {id:"fria-taro",catId:"cat-frias",name:"Taro frío",sizes:{chico:59,grande:65},options:[milkOpt(),glassCupOpt()],foodKind:"drink"},
+        {id:"fria-chai",catId:"cat-frias",name:"Chai frío",sizes:{chico:59,grande:65},options:[milkOpt(),glassCupOpt()],foodKind:"drink"},
+        {id:"frappe-cafe",catId:"cat-frap",name:"Frappé de café",sizes:{chico:59,grande:65},foodKind:"drink",options:[glassCupOpt()]},
+        {id:"frappe-fresa",catId:"cat-frap",name:"Frappé de fresa",sizes:{chico:59,grande:65},foodKind:"drink",options:[glassCupOpt()]},
+        {id:"frappe-oreo",catId:"cat-frap",name:"Frappé de oreo",sizes:{chico:59,grande:65},foodKind:"drink",options:[glassCupOpt()]},
         {id:"cal-americano",catId:"cat-cal",name:"Americano caliente",price:39,foodKind:"drink",options:[{key:"refill",label:"¿Lleva refill?",type:"single",required:true,choices:["Sin refill",{label:"Con refill",price:6}]}]},
         {id:"cal-latte",catId:"cat-cal",name:"Latte caliente",price:45,options:[milkOpt()],foodKind:"drink"},
         {id:"cal-vainilla",catId:"cat-cal",name:"Vainilla latte caliente",price:55,options:[milkOpt()],foodKind:"drink"},
@@ -276,8 +279,8 @@
         {id:"cal-taro",catId:"cat-cal",name:"Taro caliente",price:59,options:[milkOpt()],foodKind:"drink"},
         {id:"cal-chai",catId:"cat-cal",name:"Chai caliente",price:59,options:[milkOpt()],foodKind:"drink"},
         {id:"agua-natural",catId:"cat-otras",name:"Agua natural",price:8,foodKind:"drink"},
-        {id:"agua-jamaica",catId:"cat-otras",name:"Agua de jamaica natural",sizes:{chico:45,grande:49},foodKind:"drink"},
-        {id:"te-negro",catId:"cat-otras",name:"Té negro natural",sizes:{chico:45,grande:49},foodKind:"drink"},
+        {id:"agua-jamaica",catId:"cat-otras",name:"Agua de jamaica natural",sizes:{chico:45,grande:49},foodKind:"drink",options:[glassCupOpt()]},
+        {id:"te-negro",catId:"cat-otras",name:"Té negro natural",sizes:{chico:45,grande:49},foodKind:"drink",options:[glassCupOpt()]},
         {id:"refresco",catId:"cat-otras",name:"Refresco",price:25,foodKind:"drink"},
         {id:"refresco-chico",catId:"cat-otras",name:"Refresco chico",price:18,foodKind:"drink"},
         {id:"agua-mineral",catId:"cat-otras",name:"Agua mineral",price:25,foodKind:"drink"},
@@ -427,7 +430,10 @@
         if(!it) return;
         const key=l.itemId; // group by base product, not by full display name
         const cat=catalog.catMap[it.catId]?.name||"—";
-        const variantName=lineDisplayNameWith(catalog,l); // includes options like "(Roja)"
+        // Compute a variant name that ignores non-variant options (e.g. glass cup discount)
+        const variantLine={...l, opts:{...(l.opts||{})}};
+        delete variantLine.opts.vidrio;
+        const variantName=lineDisplayNameWith(catalog,variantLine);
         const subtotal=lineSubtotalWith(catalog,l);
         if(!m[key]) m[key]={itemId:l.itemId, name:it.name, cat, qty:0, total:0, variants:{}};
         m[key].qty+=l.qty;
@@ -475,6 +481,11 @@
         item.options.forEach(o=>{
           const val=opts[o.key];
           if(val===undefined||val===null) return;
+          // Glass cup discount: only show when active (skip "No")
+          if(o.key==="vidrio"){
+            if(typeof val==="string" && val.startsWith("Sí")) parts.push("Vaso de vidrio");
+            return;
+          }
           if(o.type==="single"){ if(val) parts.push(val); }
           else { if(Array.isArray(val)&&val.length) parts.push(val.join(", ")); }
         });
@@ -783,22 +794,45 @@
       const [profile, setProfile] = useState(null);
       const [pins, setPins] = useState(()=>loadState("la_pins", {admin:"",servicio:"",cocina:""}));
       const [initialized, setInitialized] = useState(()=>loadState("la_initialized", false));
+      // Catalog migration: applied both to localStorage-loaded catalog and to
+      // any catalog received from Firebase. Adds new option fields to items
+      // when they get released (so existing live catalogs auto-upgrade).
+      function migrateCatalog(cat){
+        if(!cat || !cat.items) return cat;
+        const milkIds=new Set(['fria-latte','fria-vainilla','fria-caramelo','fria-matcha','fria-taro','fria-chai','cal-latte','cal-vainilla','cal-caramelo','cal-matcha','cal-taro','cal-chai']);
+        const glassIds=new Set(['fria-americano','fria-latte','fria-vainilla','fria-caramelo','fria-matcha','fria-taro','fria-chai','frappe-cafe','frappe-fresa','frappe-oreo','agua-jamaica','te-negro']);
+        let changed=false;
+        const items=cat.items.map(it=>{
+          let next=it;
+          // Migration 1: milk option
+          if(milkIds.has(it.id)){
+            const hasMilk=(next.options||[]).some(o=>o.key==="milk");
+            if(!hasMilk){ changed=true; next={...next, options:[milkOpt(), ...(next.options||[])]}; }
+          }
+          // Migration 2: glass cup option
+          if(glassIds.has(it.id)){
+            const hasGlass=(next.options||[]).some(o=>o.key==="vidrio");
+            if(!hasGlass){ changed=true; next={...next, options:[...(next.options||[]), glassCupOpt()]}; }
+          }
+          return next;
+        });
+        return changed ? {...cat, items} : cat;
+      }
+
       const [catalogRaw, setCatalogRaw] = useFbKey("la_catalog", "la_catalog", (()=>{
         let cat=loadState("la_catalog", null);
         if(!cat) return buildDefaultCatalog();
-        // Migration: ensure milk option exists on items that need it
-        const milkIds=new Set(['fria-latte', 'fria-vainilla', 'fria-caramelo', 'fria-matcha', 'fria-taro', 'fria-chai', 'cal-latte', 'cal-vainilla', 'cal-caramelo', 'cal-matcha', 'cal-taro', 'cal-chai']);
-        let changed=false;
-        cat={...cat, items: cat.items.map(it=>{
-          if(!milkIds.has(it.id)) return it;
-          const hasMilk=(it.options||[]).some(o=>o.key==="milk");
-          if(hasMilk) return it;
-          changed=true;
-          return {...it, options:[milkOpt(), ...(it.options||[])]};
-        })};
-        if(changed) saveState("la_catalog", cat);
-        return cat;
+        const migrated=migrateCatalog(cat);
+        if(migrated!==cat) saveState("la_catalog", migrated);
+        return migrated;
       })());
+      // Whenever catalog changes (incl. from Firebase), auto-apply pending migrations.
+      // Writes back to Firebase only if something actually changed.
+      useEffect(()=>{
+        if(!catalogRaw) return;
+        const migrated=migrateCatalog(catalogRaw);
+        if(migrated!==catalogRaw) setCatalogRaw(migrated);
+      },[catalogRaw, setCatalogRaw]);
       const [orders,     setOrders]     = useFbKey("la_orders",     "la_orders",     normalizeOrders(loadState("la_orders",     [])));
       const [completed,  setCompleted]  = useFbKey("la_completed",  "la_completed",  normalizeOrders(loadState("la_completed",  [])));
       const [dayRecords, setDayRecords] = useFbKey("la_dayRecords", "la_dayRecords", loadState("la_dayRecords", []));
