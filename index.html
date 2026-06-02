@@ -1100,15 +1100,42 @@
         completed.forEach(o=>{ const h=hourBucket(o.completedAt||o.createdAt); buckets[h].count+=1; buckets[h].total+=orderTotalWith(catalog,o); });
         return buckets;
       },[completed,catalog]);
-      const curWeekStart=weekStart(Date.now());
-      const weekDays=dayRecords.filter(r=>weekStart(r.date)===curWeekStart).sort((a,b)=>a.date-b.date);
+      // ── Week navigation ──
+      const [viewWeekStart, setViewWeekStart] = useState(()=>weekStart(Date.now()));
+      const allWeekStarts=useMemo(()=>{
+        const s=new Set(dayRecords.map(r=>weekStart(r.date)));
+        s.add(weekStart(Date.now())); // always include current week
+        return [...s].sort((a,b)=>a-b);
+      },[dayRecords]);
+      const weekIdx=allWeekStarts.indexOf(viewWeekStart);
+      const canPrevWeek=weekIdx>0;
+      const canNextWeek=weekIdx<allWeekStarts.length-1;
+      const goPrevWeek=()=>{ if(canPrevWeek) setViewWeekStart(allWeekStarts[weekIdx-1]); };
+      const goNextWeek=()=>{ if(canNextWeek) setViewWeekStart(allWeekStarts[weekIdx+1]); };
+      const weekDays=dayRecords.filter(r=>weekStart(r.date)===viewWeekStart).sort((a,b)=>a.date-b.date);
       const weekTotal=weekDays.reduce((s,d)=>s+d.total,0);
       const weekCount=weekDays.reduce((s,d)=>s+d.count,0);
-      const now2=new Date(); const curMonth=now2.getMonth(),curYear=now2.getFullYear();
-      const monthDays=dayRecords.filter(r=>{ const d=new Date(r.date); return d.getMonth()===curMonth&&d.getFullYear()===curYear; });
-      const monthWeeks=useMemo(()=>{ const m={}; monthDays.forEach(r=>{ const ws=weekStart(r.date); if(!m[ws]) m[ws]={ws,days:[],total:0,count:0}; m[ws].days.push(r); m[ws].total+=r.total; m[ws].count+=r.count; }); return Object.values(m).sort((a,b)=>a.ws-b.ws); },[dayRecords]);
+
+      // ── Month navigation ──
+      const now2=new Date();
+      const [viewMonth, setViewMonth] = useState(now2.getMonth());
+      const [viewYear,  setViewYear]  = useState(now2.getFullYear());
+      const allMonths=useMemo(()=>{
+        const s=new Set(dayRecords.map(r=>{ const d=new Date(r.date); return d.getFullYear()*12+d.getMonth(); }));
+        s.add(now2.getFullYear()*12+now2.getMonth()); // always include current month
+        return [...s].sort((a,b)=>a-b);
+      },[dayRecords]);
+      const curMonthKey=viewYear*12+viewMonth;
+      const monthIdx=allMonths.indexOf(curMonthKey);
+      const canPrevMonth=monthIdx>0;
+      const canNextMonth=monthIdx<allMonths.length-1;
+      const goPrevMonth=()=>{ if(!canPrevMonth) return; const k=allMonths[monthIdx-1]; setViewYear(Math.floor(k/12)); setViewMonth(k%12); };
+      const goNextMonth=()=>{ if(!canNextMonth) return; const k=allMonths[monthIdx+1]; setViewYear(Math.floor(k/12)); setViewMonth(k%12); };
+      const monthDays=dayRecords.filter(r=>{ const d=new Date(r.date); return d.getMonth()===viewMonth&&d.getFullYear()===viewYear; });
+      const monthWeeks=useMemo(()=>{ const m={}; monthDays.forEach(r=>{ const ws=weekStart(r.date); if(!m[ws]) m[ws]={ws,days:[],total:0,count:0}; m[ws].days.push(r); m[ws].total+=r.total; m[ws].count+=r.count; }); return Object.values(m).sort((a,b)=>a.ws-b.ws); },[dayRecords,viewMonth,viewYear]);
       const monthTotal=monthDays.reduce((s,d)=>s+d.total,0);
       const monthCount=monthDays.reduce((s,d)=>s+d.count,0);
+      const curMonth=viewMonth; const curYear=viewYear;
 
       // ============== AUTH GUARD ==============
       if(!profile) return <AuthScreen pins={pins} firstRun={!initialized} onAuthed={p=>{ setProfile(p); if(!initialized) setInitialized(true); }} />;
@@ -1216,8 +1243,8 @@
                   : "Esta acción es irreversible. Se reiniciará el día y los datos se archivarán.";
                 setConfirmModal({title:"Terminar día",desc,confirmLabel:"Terminar día",danger:true,countdown:5,onConfirm:()=>{terminarDia();setConfirmModal(null);}});
               }} />}
-            {tab==="semana"&&<TabSemana catalog={catalog} weekDays={weekDays} weekTotal={weekTotal} weekCount={weekCount} curWeekStart={curWeekStart} onReport={()=>setReportModal("week")} onDayDetail={d=>setDayDetail(d)} />}
-            {tab==="mes"&&<TabMes catalog={catalog} monthWeeks={monthWeeks} monthTotal={monthTotal} monthCount={monthCount} curMonth={curMonth} curYear={curYear} onReport={()=>setReportModal("month")} onWeekDetail={w=>setWeekDetail(w)} />}
+            {tab==="semana"&&<TabSemana catalog={catalog} weekDays={weekDays} weekTotal={weekTotal} weekCount={weekCount} viewWeekStart={viewWeekStart} canPrev={canPrevWeek} canNext={canNextWeek} onPrev={goPrevWeek} onNext={goNextWeek} onReport={()=>setReportModal("week")} onDayDetail={d=>setDayDetail(d)} />}
+            {tab==="mes"&&<TabMes catalog={catalog} monthWeeks={monthWeeks} monthTotal={monthTotal} monthCount={monthCount} curMonth={curMonth} curYear={curYear} canPrev={canPrevMonth} canNext={canNextMonth} onPrev={goPrevMonth} onNext={goNextMonth} onReport={()=>setReportModal("month")} onWeekDetail={w=>setWeekDetail(w)} />}
             {tab==="catalogo"&&<TabCatalogo catalog={catalog} setCatalogRaw={setCatalogRaw} showToast={showToast} />}
             {tab==="ajustes"&&<TabAjustes pins={pins} setPins={setPins} soundOn={soundOn} setSoundOn={setSoundOn} showToast={showToast} />}
           </div>
@@ -1240,7 +1267,7 @@
         {chargeModal&&<ChargeModal catalog={catalog} order={chargeModal} onCancel={()=>setChargeModal(null)} onConfirm={payment=>{chargeOrder(chargeModal.id,payment);setChargeModal(null);}} />}
         {editingCompletedId&&(()=>{ const ec=completed.find(c=>c.id===editingCompletedId); if(!ec) return null; return <EditCompletedModal catalog={catalog} order={ec} onClose={()=>setEditingCompletedId(null)} onUpdate={fn=>updateCompleted(ec.id,fn)} />; })()}
         {reportModal==="day"&&<DayReport catalog={catalog} completed={completed} hourFlow={hourFlow} onClose={()=>setReportModal(null)} />}
-        {reportModal==="week"&&<WeekReport catalog={catalog} weekDays={weekDays} curWeekStart={curWeekStart} onClose={()=>setReportModal(null)} />}
+        {reportModal==="week"&&<WeekReport catalog={catalog} weekDays={weekDays} curWeekStart={viewWeekStart} onClose={()=>setReportModal(null)} />}
         {reportModal==="month"&&<MonthReport catalog={catalog} monthWeeks={monthWeeks} curMonth={curMonth} curYear={curYear} onClose={()=>setReportModal(null)} />}
         {weekDetail&&<WeekDetailModal catalog={catalog} week={weekDetail} onClose={()=>setWeekDetail(null)} />}
         {dayDetail&&<DayDetailModal catalog={catalog} day={dayDetail} onClose={()=>setDayDetail(null)} />}
@@ -2545,9 +2572,9 @@
     /* =========================================================
        TAB · SEMANA
        ========================================================= */
-    function TabSemana({catalog, weekDays, weekTotal, weekCount, curWeekStart, onReport, onDayDetail}){
-      const wd=new Date(curWeekStart); const we=new Date(curWeekStart); we.setDate(we.getDate()+6);
-      const wkLabel=`${wd.getDate()} ${MONTHS[wd.getMonth()].slice(0,3)} – ${we.getDate()} ${MONTHS[we.getMonth()].slice(0,3)}`;
+    function TabSemana({catalog, weekDays, weekTotal, weekCount, viewWeekStart, canPrev, canNext, onPrev, onNext, onReport, onDayDetail}){
+      const wd=new Date(viewWeekStart); const we=new Date(viewWeekStart); we.setDate(we.getDate()+6);
+      const wkLabel=`${wd.getDate()} ${MONTHS[wd.getMonth()].slice(0,3)} – ${we.getDate()} ${MONTHS[we.getMonth()].slice(0,3)} ${we.getFullYear()}`;
       // Aggregate hours pico across the week's days
       const wkHours=useMemo(()=>{
         const buckets=Array(24).fill(0).map((_,h)=>({h,count:0,total:0}));
@@ -2556,9 +2583,13 @@
       },[weekDays,catalog]);
       const peak=wkHours.reduce((b,x)=>x.count>b.count?x:b,{h:-1,count:0});
       return <div className="la-tabpad">
-        <div style={{textAlign:"center",margin:"4px 0 14px"}}>
+        <div style={{textAlign:"center",margin:"4px 0 14px",position:"relative"}}>
           <div style={{fontSize:11,fontWeight:"bold",letterSpacing:2,textTransform:"uppercase",color:C.muted}}>Semana</div>
-          <div style={{fontSize:17,fontWeight:"bold",color:C.dark}}>{wkLabel}</div>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:12}}>
+            <button onClick={onPrev} disabled={!canPrev} className="la-tap" style={{background:"none",border:"none",cursor:canPrev?"pointer":"default",fontSize:20,color:canPrev?C.dark:"#ddd",padding:"2px 6px",lineHeight:1}}>‹</button>
+            <div style={{fontSize:17,fontWeight:"bold",color:C.dark}}>{wkLabel}</div>
+            <button onClick={onNext} disabled={!canNext} className="la-tap" style={{background:"none",border:"none",cursor:canNext?"pointer":"default",fontSize:20,color:canNext?C.dark:"#ddd",padding:"2px 6px",lineHeight:1}}>›</button>
+          </div>
         </div>
         <div style={{display:"flex",gap:10,marginBottom:16}}><StatCard label="Total semana" value={fmt(weekTotal)} index={0} /><StatCard label="Cuentas" value={weekCount} pink index={1} /></div>
         {weekDays.length===0&&<div className="la-empty" style={{textAlign:"center",padding:"40px 20px",color:C.muted,fontSize:14}}>Aún no hay días archivados esta semana.<div style={{fontSize:12,marginTop:6}}>Termina un día para verlo aquí.</div></div>}
@@ -2585,7 +2616,7 @@
     /* =========================================================
        TAB · MES
        ========================================================= */
-    function TabMes({catalog, monthWeeks, monthTotal, monthCount, curMonth, curYear, onReport, onWeekDetail}){
+    function TabMes({catalog, monthWeeks, monthTotal, monthCount, curMonth, curYear, canPrev, canNext, onPrev, onNext, onReport, onWeekDetail}){
       const monthHours=useMemo(()=>{
         const buckets=Array(24).fill(0).map((_,h)=>({h,count:0,total:0}));
         monthWeeks.forEach(w=>w.days.forEach(d=>d.orders?.forEach(o=>{ const h=hourBucket(o.completedAt||o.createdAt); buckets[h].count+=1; buckets[h].total+=orderTotalWith(catalog,o); })));
@@ -2595,7 +2626,11 @@
       return <div className="la-tabpad">
         <div style={{textAlign:"center",margin:"4px 0 14px"}}>
           <div style={{fontSize:11,fontWeight:"bold",letterSpacing:2,textTransform:"uppercase",color:C.muted}}>Mes</div>
-          <div style={{fontSize:17,fontWeight:"bold",color:C.dark,textTransform:"capitalize"}}>{MONTHS[curMonth]} {curYear}</div>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:12}}>
+            <button onClick={onPrev} disabled={!canPrev} className="la-tap" style={{background:"none",border:"none",cursor:canPrev?"pointer":"default",fontSize:20,color:canPrev?C.dark:"#ddd",padding:"2px 6px",lineHeight:1}}>‹</button>
+            <div style={{fontSize:17,fontWeight:"bold",color:C.dark,textTransform:"capitalize"}}>{MONTHS[curMonth]} {curYear}</div>
+            <button onClick={onNext} disabled={!canNext} className="la-tap" style={{background:"none",border:"none",cursor:canNext?"pointer":"default",fontSize:20,color:canNext?C.dark:"#ddd",padding:"2px 6px",lineHeight:1}}>›</button>
+          </div>
         </div>
         <div style={{display:"flex",gap:10,marginBottom:16}}><StatCard label="Total mes" value={fmt(monthTotal)} index={0} /><StatCard label="Cuentas" value={monthCount} pink index={1} /></div>
         {monthWeeks.length===0&&<div className="la-empty" style={{textAlign:"center",padding:"40px 20px",color:C.muted,fontSize:14}}>Sin semanas archivadas este mes.</div>}
