@@ -413,7 +413,7 @@
     function hourBucketsFromOrders(catalog, orders){
       const buckets=Array(24).fill(0).map((_,h)=>({h,count:0,total:0}));
       orders.forEach(o=>{
-        const h=hourBucket(o.completedAt||o.createdAt);
+        const h=hourBucket(o.createdAt||o.completedAt); // createdAt = when the customer arrived
         buckets[h].count+=1;
         buckets[h].total+=orderTotalWith(catalog,o);
       });
@@ -809,10 +809,26 @@
             const hasMilk=(next.options||[]).some(o=>o.key==="milk");
             if(!hasMilk){ changed=true; next={...next, options:[milkOpt(), ...(next.options||[])]}; }
           }
-          // Migration 2: glass cup option
+          // Migration 2: glass cup option — add if missing, OR fix if choices lack price:-5
           if(glassIds.has(it.id)){
-            const hasGlass=(next.options||[]).some(o=>o.key==="vidrio");
-            if(!hasGlass){ changed=true; next={...next, options:[...(next.options||[]), glassCupOpt()]}; }
+            const glassOpt=(next.options||[]).find(o=>o.key==="vidrio");
+            if(!glassOpt){
+              // Not present at all — add it
+              changed=true;
+              next={...next, options:[...(next.options||[]), glassCupOpt()]};
+            } else {
+              // Present but check if the "Sí" choice has the price:-5
+              const siChoice=(glassOpt.choices||[]).find(c=>{
+                const lbl=typeof c==="object"&&c!==null?c.label:c;
+                return lbl && lbl.startsWith("Sí");
+              });
+              const hasPriceCorrect = siChoice && typeof siChoice==="object" && siChoice.price===-5;
+              if(!hasPriceCorrect){
+                // Fix: replace the glassCupOpt with the correct version
+                changed=true;
+                next={...next, options:(next.options||[]).map(o=>o.key==="vidrio"?glassCupOpt():o)};
+              }
+            }
           }
           return next;
         });
@@ -943,7 +959,18 @@
       function deleteCompleted(id){
         const s=completed.find(c=>c.id===id);
         setCompleted(p=>p.filter(c=>c.id!==id));
-        showToast("Orden eliminada",()=>setCompleted(p=>[s,...p]));
+        // Also remove from dayRecords in case the day was already closed
+        // (prevents test orders from polluting weekly/monthly reports)
+        setDayRecords(p=>p.map(day=>{
+          if(!(day.orders||[]).some(o=>o.id===id)) return day;
+          const newOrders=day.orders.filter(o=>o.id!==id);
+          const newTotal=newOrders.reduce((s,o)=>s+orderTotalWith(catalog,o),0);
+          return {...day, orders:newOrders, total:newTotal, count:newOrders.length};
+        }).filter(day=>day.count>0)); // remove empty day records
+        showToast("Orden eliminada",()=>{
+          setCompleted(p=>[s,...p]);
+          // Note: dayRecords undo is intentionally skipped to keep data consistent
+        });
       }
       function updateCompleted(id,fn){ setCompleted(p=>p.map(c=>c.id===id?fn(c):c)); }
       function reopenCompleted(id){
@@ -1097,7 +1124,7 @@
       },[completed,catalog]);
       const hourFlow=useMemo(()=>{
         const buckets=Array(24).fill(0).map((_,h)=>({h,count:0,total:0}));
-        completed.forEach(o=>{ const h=hourBucket(o.completedAt||o.createdAt); buckets[h].count+=1; buckets[h].total+=orderTotalWith(catalog,o); });
+        completed.forEach(o=>{ const h=hourBucket(o.createdAt||o.completedAt); buckets[h].count+=1; buckets[h].total+=orderTotalWith(catalog,o); });
         return buckets;
       },[completed,catalog]);
       // ── Week navigation ──
@@ -2578,7 +2605,7 @@
       // Aggregate hours pico across the week's days
       const wkHours=useMemo(()=>{
         const buckets=Array(24).fill(0).map((_,h)=>({h,count:0,total:0}));
-        weekDays.forEach(d=>d.orders?.forEach(o=>{ const h=hourBucket(o.completedAt||o.createdAt); buckets[h].count+=1; buckets[h].total+=orderTotalWith(catalog,o); }));
+        weekDays.forEach(d=>d.orders?.forEach(o=>{ const h=hourBucket(o.createdAt||o.completedAt); buckets[h].count+=1; buckets[h].total+=orderTotalWith(catalog,o); }));
         return buckets;
       },[weekDays,catalog]);
       const peak=wkHours.reduce((b,x)=>x.count>b.count?x:b,{h:-1,count:0});
@@ -2619,7 +2646,7 @@
     function TabMes({catalog, monthWeeks, monthTotal, monthCount, curMonth, curYear, canPrev, canNext, onPrev, onNext, onReport, onWeekDetail}){
       const monthHours=useMemo(()=>{
         const buckets=Array(24).fill(0).map((_,h)=>({h,count:0,total:0}));
-        monthWeeks.forEach(w=>w.days.forEach(d=>d.orders?.forEach(o=>{ const h=hourBucket(o.completedAt||o.createdAt); buckets[h].count+=1; buckets[h].total+=orderTotalWith(catalog,o); })));
+        monthWeeks.forEach(w=>w.days.forEach(d=>d.orders?.forEach(o=>{ const h=hourBucket(o.createdAt||o.completedAt); buckets[h].count+=1; buckets[h].total+=orderTotalWith(catalog,o); })));
         return buckets;
       },[monthWeeks,catalog]);
       const peak=monthHours.reduce((b,x)=>x.count>b.count?x:b,{h:-1,count:0});
