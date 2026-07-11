@@ -877,7 +877,7 @@
         return changed ? {...cat, items} : cat;
       }
 
-      const [catalogRaw, setCatalogRaw, catalogLoaded] = useFbKey("la_catalog", "la_catalog", (()=>{
+      const [catalogRaw, setCatalogRaw, catalogLoaded] = useFbKey("catalog", "la_catalog", (()=>{
         let cat=loadState("la_catalog", null);
         if(!cat) return buildDefaultCatalog();
         // NOTE: migration is intentionally NOT applied here anymore — see the
@@ -896,10 +896,10 @@
         const migrated=migrateCatalog(catalogRaw);
         if(migrated!==catalogRaw) setCatalogRaw(migrated);
       },[catalogRaw, catalogLoaded, setCatalogRaw]);
-      const [orders,     setOrders]     = useFbKey("la_orders",     "la_orders",     normalizeOrders(loadState("la_orders",     [])));
-      const [completed,  setCompleted]  = useFbKey("la_completed",  "la_completed",  normalizeOrders(loadState("la_completed",  [])));
-      const [dayRecords, setDayRecords] = useFbKey("la_dayRecords", "la_dayRecords", loadState("la_dayRecords", []));
-      const [soundOn,    setSoundOn]    = useFbKey("la_soundOn",    "la_soundOn",    loadState("la_soundOn",    true));
+      const [orders,     setOrders]     = useFbKey("orders",     "la_orders",     normalizeOrders(loadState("la_orders",     [])));
+      const [completed,  setCompleted]  = useFbKey("completed",  "la_completed",  normalizeOrders(loadState("la_completed",  [])));
+      const [dayRecords, setDayRecords] = useFbKey("dayRecords", "la_dayRecords", loadState("la_dayRecords", []));
+      const [soundOn,    setSoundOn]    = useFbKey("soundOn",    "la_soundOn",    loadState("la_soundOn",    true));
 
       // Derived indexed catalog
       const catalog = useMemo(()=>indexCatalog(catalogRaw),[catalogRaw]);
