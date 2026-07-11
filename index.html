@@ -100,13 +100,15 @@
           for(let i=0; i<=maxIdx; i++) arr.push(fbFixArrays(value[i] ?? null));
           return arr;
         }
-        // Recurse into plain objects; fix known array fields that may be null/missing
-        const ARRAY_FIELDS = ["lines","options","choices","categories","items","orders","completed","dayRecords"];
+        // Recurse into plain objects only — do NOT inject default fields here.
+        // (normalizeOrder/normalizeOrders already guarantee `lines` is an array
+        // wherever that actually applies; blindly adding fields like `lines`,
+        // `options`, `categories` etc. to every nested object — including things
+        // like an item's `sizes:{chico,grande}` — silently corrupts unrelated data.)
         const out = {};
         keys.forEach(k => {
           out[k] = fbFixArrays(value[k]);
         });
-        ARRAY_FIELDS.forEach(f => { if(out[f] === null || out[f] === undefined) out[f] = []; });
         return out;
       }
       return value;
@@ -117,6 +119,11 @@
     // The returned setter writes to both Firebase and localStorage.
     function useFbKey(fbPath, lsKey, initialValue){
       const [val, setVal] = useState(initialValue);
+      // "loaded" only flips true once Firebase has actually delivered a snapshot
+      // (even a null/empty one). This prevents any effect from writing the
+      // transient local/default value back to Firebase before we know what's
+      // really there — that race condition is what caused the catalog wipe.
+      const [loaded, setLoaded] = useState(false);
       const skipNext = useRef(false);
       const valRef = useRef(val);
       valRef.current = val;
@@ -127,7 +134,7 @@
           ref = getDb().ref(fbPath);
           ref.on("value", snap => {
             const raw = snap.val();
-            if(skipNext.current){ skipNext.current=false; return; }
+            if(skipNext.current){ skipNext.current=false; setLoaded(true); return; }
             // Firebase strips empty arrays — when the remote was previously an
             // array and now we receive null, the remote value is []. Use the
             // current local value's type to decide whether null means "empty"
@@ -137,6 +144,7 @@
                 setVal([]);
                 saveState(lsKey, []);
               }
+              setLoaded(true);
               return;
             }
             let remote = fbFixArrays(raw);
@@ -144,8 +152,9 @@
             else if(remote && typeof remote==="object" && Object.keys(remote).every(k=>/^\d+$/.test(k))) remote = normalizeOrders(remote);
             setVal(remote);
             saveState(lsKey, remote);
+            setLoaded(true);
           });
-        }catch(e){ console.warn("useFbKey subscribe failed", e); }
+        }catch(e){ console.warn("useFbKey subscribe failed", e); setLoaded(true); /* fail-open so app stays usable offline */ }
         return ()=>{ try{ ref && ref.off(); }catch{} };
       }, [fbPath, lsKey]);
 
@@ -159,7 +168,7 @@
         });
       }, [fbPath, lsKey]);
 
-      return [val, setter];
+      return [val, setter, loaded];
     }
 
     // Cross-device broadcast (used for kitchen-ready ping)
@@ -388,26 +397,57 @@
           const ch=(o.choices||[]).find(c=>choiceLabel(c)===val);
           if(ch) extra+=choicePrice(ch);
         } else {
-          (Array.isArray(val)?val:[]).forEach(lbl=>{
+          const selected=Array.isArray(val)?val:[];
+          selected.forEach(lbl=>{
             const ch=(o.choices||[]).find(c=>choiceLabel(c)===lbl);
             if(ch) extra+=choicePrice(ch);
           });
+          // Tiered pricing: first `freeCount` selections included, each one beyond
+          // that costs `extraPrice` (e.g. "4 ingredientes incluidos, $10 c/u extra")
+          if(typeof o.freeCount==="number" && typeof o.extraPrice==="number" && selected.length>o.freeCount){
+            extra += (selected.length-o.freeCount)*o.extraPrice;
+          }
         }
       });
       return extra;
     }
 
+    // Generic size support (chico / mediano / grande) — any subset can be present on an item
+    const SIZE_ORDER=["chico","mediano","grande"];
+    const SIZE_LABELS={chico:"Chico",mediano:"Mediano",grande:"Grande"};
+    function sizeKeysFor(item){ return item?.sizes ? SIZE_ORDER.filter(k=>item.sizes[k]!==undefined) : []; }
+    function sizePriceLabel(item){ return sizeKeysFor(item).map(k=>fmt(item.sizes[k])).join(" / "); }
     function linePriceWith(catalog,line){
       const item=catalog.itemMap[line.itemId]; if(!item) return 0;
       const opts=line.opts||{};
       let base=item.price||0;
-      if(item.sizes) base=item.sizes[opts.size||"chico"];
+      if(item.sizes){ const keys=sizeKeysFor(item); base=item.sizes[opts.size]??item.sizes[keys[0]]??0; }
       base+=optionsExtraPrice(item, opts);
       return base;
     }
-    function lineSubtotalWith(catalog,line){ return linePriceWith(catalog,line)*(line.qty||0); }
+    // If a line has a frozen unitPrice (snapshotted at charge time), use it —
+    // this keeps historical reports accurate even if catalog prices change later.
+    // Open orders being built (no unitPrice yet) still compute live from the catalog.
+    function lineSubtotalWith(catalog,line){
+      const price = (typeof line.unitPrice==="number") ? line.unitPrice : linePriceWith(catalog,line);
+      return price*(line.qty||0);
+    }
+    // Snapshot the current price of every line in an order — called once, at the
+    // moment a sale is finalized (chargeOrder / closeAllAccounts), so later catalog
+    // price changes never retroactively alter what a past report shows.
+    function snapshotOrderPrices(catalog,order){
+      return {...order, lines:(order.lines||[]).map(l=>
+        typeof l.unitPrice==="number" ? l : {...l, unitPrice:linePriceWith(catalog,l)}
+      )};
+    }
     function orderTotalWith(catalog,order){ return (Array.isArray(order?.lines)?order.lines:[]).reduce((s,l)=>s+lineSubtotalWith(catalog,l),0); }
     function orderItemCountWith(order){ return (Array.isArray(order?.lines)?order.lines:[]).reduce((s,l)=>s+(l.qty||0),0); }
+    // Some categories (e.g. Cremería) sell products that aren't part of the café's
+    // daily business — they're excluded from café totals/reports but still fully
+    // charged to the customer's bill (orderTotalWith stays unchanged for billing).
+    function isExcludedCat(catalog,catId){ return !!catalog.catMap?.[catId]?.excludeFromTotals; }
+    function cafeTotalWith(catalog,order){ return (Array.isArray(order?.lines)?order.lines:[]).filter(l=>{const it=catalog.itemMap[l.itemId]; return !it||!isExcludedCat(catalog,it.catId);}).reduce((s,l)=>s+lineSubtotalWith(catalog,l),0); }
+    function cremeriaTotalWith(catalog,order){ return (Array.isArray(order?.lines)?order.lines:[]).filter(l=>{const it=catalog.itemMap[l.itemId]; return it&&isExcludedCat(catalog,it.catId);}).reduce((s,l)=>s+lineSubtotalWith(catalog,l),0); }
 
     // Build 24-hour activity buckets from a list of orders
     function hourBucketsFromOrders(catalog, orders){
@@ -428,6 +468,7 @@
         if(l.opts?.parentLid) return;
         const it=catalog.itemMap[l.itemId];
         if(!it) return;
+        if(isExcludedCat(catalog,it.catId)) return; // Cremería excluded from café top-items
         const key=l.itemId; // group by base product, not by full display name
         const cat=catalog.catMap[it.catId]?.name||"—";
         // Compute a variant name that ignores non-variant options (e.g. glass cup discount)
@@ -475,7 +516,7 @@
       const item=catalog.itemMap[line.itemId]; if(!item) return "(eliminado)";
       const opts=line.opts||{};
       let name=item.name; const parts=[];
-      if(opts.size) parts.push(opts.size==="chico"?"Chico":"Grande");
+      if(opts.size) parts.push(SIZE_LABELS[opts.size]||opts.size);
       // All known options in catalog order
       if(item.options){
         item.options.forEach(o=>{
@@ -789,6 +830,7 @@
       {k:"ajustes",label:"Ajustes",icon:"⚙️"},
     ];
 
+
     function App(){
       // Session-only state (PIN required on each app open)
       const [profile, setProfile] = useState(null);
@@ -835,20 +877,25 @@
         return changed ? {...cat, items} : cat;
       }
 
-      const [catalogRaw, setCatalogRaw] = useFbKey("la_catalog", "la_catalog", (()=>{
+      const [catalogRaw, setCatalogRaw, catalogLoaded] = useFbKey("la_catalog", "la_catalog", (()=>{
         let cat=loadState("la_catalog", null);
         if(!cat) return buildDefaultCatalog();
-        const migrated=migrateCatalog(cat);
-        if(migrated!==cat) saveState("la_catalog", migrated);
-        return migrated;
+        // NOTE: migration is intentionally NOT applied here anymore — see the
+        // gated effect below. Applying it to this synchronous initial value and
+        // writing it back to Firebase before the real remote snapshot arrives is
+        // exactly the race condition that once wiped the live catalog.
+        return cat;
       })());
       // Whenever catalog changes (incl. from Firebase), auto-apply pending migrations.
-      // Writes back to Firebase only if something actually changed.
+      // Writes back to Firebase only if something actually changed — and ONLY once
+      // `catalogLoaded` confirms we've received a real snapshot from Firebase (not
+      // the transient local/default value used before the first snapshot arrives).
       useEffect(()=>{
-        if(!catalogRaw) return;
+        if(!catalogLoaded) return;
+        if(!catalogRaw){ setCatalogRaw(buildDefaultCatalog()); return; }
         const migrated=migrateCatalog(catalogRaw);
         if(migrated!==catalogRaw) setCatalogRaw(migrated);
-      },[catalogRaw, setCatalogRaw]);
+      },[catalogRaw, catalogLoaded, setCatalogRaw]);
       const [orders,     setOrders]     = useFbKey("la_orders",     "la_orders",     normalizeOrders(loadState("la_orders",     [])));
       const [completed,  setCompleted]  = useFbKey("la_completed",  "la_completed",  normalizeOrders(loadState("la_completed",  [])));
       const [dayRecords, setDayRecords] = useFbKey("la_dayRecords", "la_dayRecords", loadState("la_dayRecords", []));
@@ -936,7 +983,8 @@
       function chargeOrder(id,payment){
         const o=orders.find(x=>x.id===id); if(!o) return;
         const folio=generateFolio(id);
-        const comp={...o,completedAt:Date.now(),payment,folio};
+        const snapped=snapshotOrderPrices(catalog,o);
+        const comp={...snapped,completedAt:Date.now(),payment,folio};
         saveFolioRecord(o,folio);
         setCompleted(p=>[comp,...p]); setOrders(p=>p.filter(x=>x.id!==id)); setActiveOrderId(null);
         const tip=resolveTip(orderTotalWith(catalog,o),payment);
@@ -952,7 +1000,7 @@
       }
       function closeAllAccounts(){
         const s=orders;
-        const comps=orders.map(o=>({...o,completedAt:Date.now(),payment:{method:"efectivo",tipMode:"none",tipValue:0}}));
+        const comps=orders.map(o=>({...snapshotOrderPrices(catalog,o),completedAt:Date.now(),payment:{method:"efectivo",tipMode:"none",tipValue:0}}));
         setCompleted(p=>[...comps,...p]); setOrders([]);
         showToast(`${s.length} cuentas cerradas`,()=>{ setOrders(s); setCompleted(p=>p.filter(c=>!comps.find(x=>x.id===c.id))); });
       }
@@ -964,8 +1012,9 @@
         setDayRecords(p=>p.map(day=>{
           if(!(day.orders||[]).some(o=>o.id===id)) return day;
           const newOrders=day.orders.filter(o=>o.id!==id);
-          const newTotal=newOrders.reduce((s,o)=>s+orderTotalWith(catalog,o),0);
-          return {...day, orders:newOrders, total:newTotal, count:newOrders.length};
+          const newTotal=newOrders.reduce((s,o)=>s+cafeTotalWith(catalog,o),0);
+          const newCremeria=newOrders.reduce((s,o)=>s+cremeriaTotalWith(catalog,o),0);
+          return {...day, orders:newOrders, total:newTotal, cremeriaTotal:newCremeria, count:newOrders.length};
         }).filter(day=>day.count>0)); // remove empty day records
         showToast("Orden eliminada",()=>{
           setCompleted(p=>[s,...p]);
@@ -985,8 +1034,9 @@
         // and roll over to the next day — they'll count toward the report of the
         // day they're actually charged, based on their completedAt timestamp.
         if(completed.length){
-          const total=completed.reduce((s,o)=>s+orderTotalWith(catalog,o),0);
-          setDayRecords(p=>[...p,{key:dayKey(Date.now()),date:Date.now(),total,count:completed.length,orders:completed}]);
+          const total=completed.reduce((s,o)=>s+cafeTotalWith(catalog,o),0);
+          const cremeriaTotal=completed.reduce((s,o)=>s+cremeriaTotalWith(catalog,o),0);
+          setDayRecords(p=>[...p,{key:dayKey(Date.now()),date:Date.now(),total,cremeriaTotal,count:completed.length,orders:completed}]);
         }
         setCompleted([]);
         // orders stays untouched — pending accounts roll over to tomorrow
@@ -1111,9 +1161,10 @@
 
       // ============== DERIVED ==============
       const activeOrder=orders.find(o=>o.id===activeOrderId);
-      const dayTotal=completed.reduce((s,o)=>s+orderTotalWith(catalog,o),0);
+      const dayTotal=completed.reduce((s,o)=>s+cafeTotalWith(catalog,o),0);
+      const dayCremeria=completed.reduce((s,o)=>s+cremeriaTotalWith(catalog,o),0);
       const openTotal=orders.reduce((s,o)=>s+orderTotalWith(catalog,o),0);
-      const catBreakdown=useMemo(()=>{ const m={}; completed.forEach(o=>(Array.isArray(o?.lines)?o.lines:[]).forEach(l=>{ const it=catalog.itemMap[l.itemId]; const c=it?catalog.catMap[it.catId]?.name||"—":"(eliminado)"; if(!m[c]) m[c]={cat:c,qty:0,total:0}; m[c].qty+=l.qty; m[c].total+=lineSubtotalWith(catalog,l); })); return Object.values(m).sort((a,b)=>b.total-a.total); },[completed,catalog]);
+      const catBreakdown=useMemo(()=>{ const m={}; completed.forEach(o=>(Array.isArray(o?.lines)?o.lines:[]).forEach(l=>{ const it=catalog.itemMap[l.itemId]; if(it&&isExcludedCat(catalog,it.catId)) return; const c=it?catalog.catMap[it.catId]?.name||"—":"(eliminado)"; if(!m[c]) m[c]={cat:c,qty:0,total:0}; m[c].qty+=l.qty; m[c].total+=lineSubtotalWith(catalog,l); })); return Object.values(m).sort((a,b)=>b.total-a.total); },[completed,catalog]);
       const topItems=useMemo(()=>topItemsWith(catalog,completed,99),[completed,catalog]);
       const payBreakdown=useMemo(()=>{
         let ef=0,ta=0,tr=0,pr=0,pe=0,pt=0,ptr=0;
@@ -1141,6 +1192,7 @@
       const goNextWeek=()=>{ if(canNextWeek) setViewWeekStart(allWeekStarts[weekIdx+1]); };
       const weekDays=dayRecords.filter(r=>weekStart(r.date)===viewWeekStart).sort((a,b)=>a.date-b.date);
       const weekTotal=weekDays.reduce((s,d)=>s+d.total,0);
+      const weekCremeria=weekDays.reduce((s,d)=>s+(d.cremeriaTotal||0),0);
       const weekCount=weekDays.reduce((s,d)=>s+d.count,0);
 
       // ── Month navigation ──
@@ -1159,8 +1211,9 @@
       const goPrevMonth=()=>{ if(!canPrevMonth) return; const k=allMonths[monthIdx-1]; setViewYear(Math.floor(k/12)); setViewMonth(k%12); };
       const goNextMonth=()=>{ if(!canNextMonth) return; const k=allMonths[monthIdx+1]; setViewYear(Math.floor(k/12)); setViewMonth(k%12); };
       const monthDays=dayRecords.filter(r=>{ const d=new Date(r.date); return d.getMonth()===viewMonth&&d.getFullYear()===viewYear; });
-      const monthWeeks=useMemo(()=>{ const m={}; monthDays.forEach(r=>{ const ws=weekStart(r.date); if(!m[ws]) m[ws]={ws,days:[],total:0,count:0}; m[ws].days.push(r); m[ws].total+=r.total; m[ws].count+=r.count; }); return Object.values(m).sort((a,b)=>a.ws-b.ws); },[dayRecords,viewMonth,viewYear]);
+      const monthWeeks=useMemo(()=>{ const m={}; monthDays.forEach(r=>{ const ws=weekStart(r.date); if(!m[ws]) m[ws]={ws,days:[],total:0,cremeriaTotal:0,count:0}; m[ws].days.push(r); m[ws].total+=r.total; m[ws].cremeriaTotal+=(r.cremeriaTotal||0); m[ws].count+=r.count; }); return Object.values(m).sort((a,b)=>a.ws-b.ws); },[dayRecords,viewMonth,viewYear]);
       const monthTotal=monthDays.reduce((s,d)=>s+d.total,0);
+      const monthCremeria=monthDays.reduce((s,d)=>s+(d.cremeriaTotal||0),0);
       const monthCount=monthDays.reduce((s,d)=>s+d.count,0);
       const curMonth=viewMonth; const curYear=viewYear;
 
@@ -1257,7 +1310,7 @@
               onNew={()=>setNewAccountModal(true)} onTakeout={()=>setTakeoutModal(true)} onOpen={id=>setActiveOrderId(id)}
               onDelete={o=>setConfirmModal({title:"Eliminar cuenta",desc:`¿Eliminar la cuenta de ${o.name}?`,confirmLabel:"Eliminar",danger:true,onConfirm:()=>{deleteOrder(o.id);setConfirmModal(null);}})} />}
             {tab==="cocina"&&<TabCocina catalog={catalog} orders={orders} completed={completed} soundOn={soundOn} setSoundOn={setSoundOn} onMarkLine={setLinePrepared} onMarkAll={markOrderAllPrepared} onMarkLineCompleted={setLinePreparedCompleted} onTogglePreparing={togglePreparing} />}
-            {tab==="dia"&&<TabDia catalog={catalog} completed={completed} dayTotal={dayTotal} openTotal={openTotal} openCount={orders.length} catBreakdown={catBreakdown} topItems={topItems} payBreakdown={payBreakdown} hourFlow={hourFlow}
+            {tab==="dia"&&<TabDia catalog={catalog} completed={completed} dayTotal={dayTotal} dayCremeria={dayCremeria} openTotal={openTotal} openCount={orders.length} catBreakdown={catBreakdown} topItems={topItems} payBreakdown={payBreakdown} hourFlow={hourFlow}
               onEditCompleted={c=>setEditingCompletedId(c.id)} onTicket={c=>setTicketOrder(c)}
               onReopenCompleted={c=>setConfirmModal({title:"Regresar a cuentas abiertas",desc:`${c.name} volverá a Pedidos como cuenta abierta.`,confirmLabel:"Regresar a abiertas",onConfirm:()=>{reopenCompleted(c.id);setConfirmModal(null);}})}
               onCloseAll={()=>setConfirmModal({title:"Cerrar todas las cuentas",desc:`Se cerrarán ${orders.length} cuentas. Estas cuentas no llevarán propina.`,confirmLabel:"Confirmar",countdown:5,onConfirm:()=>{closeAllAccounts();setConfirmModal(null);}})}
@@ -1270,8 +1323,8 @@
                   : "Esta acción es irreversible. Se reiniciará el día y los datos se archivarán.";
                 setConfirmModal({title:"Terminar día",desc,confirmLabel:"Terminar día",danger:true,countdown:5,onConfirm:()=>{terminarDia();setConfirmModal(null);}});
               }} />}
-            {tab==="semana"&&<TabSemana catalog={catalog} weekDays={weekDays} weekTotal={weekTotal} weekCount={weekCount} viewWeekStart={viewWeekStart} canPrev={canPrevWeek} canNext={canNextWeek} onPrev={goPrevWeek} onNext={goNextWeek} onReport={()=>setReportModal("week")} onDayDetail={d=>setDayDetail(d)} />}
-            {tab==="mes"&&<TabMes catalog={catalog} monthWeeks={monthWeeks} monthTotal={monthTotal} monthCount={monthCount} curMonth={curMonth} curYear={curYear} canPrev={canPrevMonth} canNext={canNextMonth} onPrev={goPrevMonth} onNext={goNextMonth} onReport={()=>setReportModal("month")} onWeekDetail={w=>setWeekDetail(w)} />}
+            {tab==="semana"&&<TabSemana catalog={catalog} weekDays={weekDays} weekTotal={weekTotal} weekCremeria={weekCremeria} weekCount={weekCount} viewWeekStart={viewWeekStart} canPrev={canPrevWeek} canNext={canNextWeek} onPrev={goPrevWeek} onNext={goNextWeek} onReport={()=>setReportModal("week")} onDayDetail={d=>setDayDetail(d)} />}
+            {tab==="mes"&&<TabMes catalog={catalog} monthWeeks={monthWeeks} monthTotal={monthTotal} monthCremeria={monthCremeria} monthCount={monthCount} curMonth={curMonth} curYear={curYear} canPrev={canPrevMonth} canNext={canNextMonth} onPrev={goPrevMonth} onNext={goNextMonth} onReport={()=>setReportModal("month")} onWeekDetail={w=>setWeekDetail(w)} />}
             {tab==="catalogo"&&<TabCatalogo catalog={catalog} setCatalogRaw={setCatalogRaw} showToast={showToast} />}
             {tab==="ajustes"&&<TabAjustes pins={pins} setPins={setPins} soundOn={soundOn} setSoundOn={setSoundOn} showToast={showToast} />}
           </div>
@@ -1381,7 +1434,7 @@
             const itemLines=lines.filter(l=>l.itemId===item.id && !l.opts?.parentLid);
             const hasOpts=(item.options&&item.options.length)||item.sizes;
             const simpleLine=!hasOpts?itemLines[0]:null;
-            const priceLabel=item.sizes?`${fmt(item.sizes.chico)} / ${fmt(item.sizes.grande)}`:fmt(item.price||0);
+            const priceLabel=item.sizes?sizePriceLabel(item):fmt(item.price||0);
             if(hasOpts&&itemLines.length>0){
               const tq=itemLines.reduce((s,l)=>s+l.qty,0);
               return <div key={item.id} style={{marginBottom:6}}>
@@ -1425,7 +1478,7 @@
     function OptionsModal({catalog, item, onClose, onAdd, parentChoices}){
       const [sel,setSel]=useState({});
       const [qty,setQty]=useState(1);
-      const [size,setSize]=useState(item.sizes?"chico":null);
+      const [size,setSize]=useState(item.sizes?sizeKeysFor(item)[0]:null);
       const [parentLid,setParentLid]=useState(parentChoices&&parentChoices.length===1?parentChoices[0].lid:null);
       const [limitHit,setLimitHit]=useState(false);
       const [note,setNote]=useState("");
@@ -1435,7 +1488,7 @@
       const [extraRows,setExtraRows]=useState([]);
 
       function addExtraRow(ex){
-        setExtraRows(r=>[...r,{id:newId("er"),extraItem:ex,sel:{},qty:1,size:ex.sizes?"chico":null,milk:ex.milk?"entera":null,note:""}]);
+        setExtraRows(r=>[...r,{id:newId("er"),extraItem:ex,sel:{},qty:1,size:ex.sizes?sizeKeysFor(ex)[0]:null,milk:ex.milk?"entera":null,note:""}]);
       }
       function removeExtraRow(id){ setExtraRows(r=>r.filter(e=>e.id!==id)); }
       function updateExtraRow(id,patch){ setExtraRows(r=>r.map(e=>e.id===id?{...e,...patch}:e)); }
@@ -1507,7 +1560,7 @@
             {item.sizes&&<div style={{marginBottom:16}}>
               <div style={{fontSize:13,marginBottom:8}}>Tamaño:</div>
               <div style={{display:"flex",gap:8}}>
-                {["chico","grande"].map(s=><button key={s} onClick={()=>setSize(s)} className={chipCls(size===s)} style={chip(size===s)}>{s==="chico"?"Chico":"Grande"} · {fmt(item.sizes[s])}</button>)}
+                {sizeKeysFor(item).map(s=><button key={s} onClick={()=>setSize(s)} className={chipCls(size===s)} style={chip(size===s)}>{SIZE_LABELS[s]} · {fmt(item.sizes[s])}</button>)}
               </div>
             </div>}
 
@@ -1543,7 +1596,7 @@
                     <button onClick={()=>removeExtraRow(e.id)} className="la-tap" style={{background:"transparent",border:"none",color:C.danger,fontSize:16,cursor:"pointer",padding:"2px 4px"}}>✕</button>
                   </div>
                   {e.extraItem.sizes&&<div style={{display:"flex",gap:6,marginBottom:8}}>
-                    {["chico","grande"].map(s=><button key={s} onClick={()=>updateExtraRow(e.id,{size:s})} className={chipCls(e.size===s)} style={{...chip(e.size===s),fontSize:12,padding:"6px 10px"}}>{s==="chico"?"Chico":"Grande"} · {fmt(e.extraItem.sizes[s])}</button>)}
+                    {sizeKeysFor(e.extraItem).map(s=><button key={s} onClick={()=>updateExtraRow(e.id,{size:s})} className={chipCls(e.size===s)} style={{...chip(e.size===s),fontSize:12,padding:"6px 10px"}}>{SIZE_LABELS[s]} · {fmt(e.extraItem.sizes[s])}</button>)}
                   </div>}
 
                   {exOpts.map(o=>{ const v=e.sel[o.key]; return <div key={o.key} style={{marginBottom:8}}>
@@ -1561,7 +1614,7 @@
               })}
               {availableExtras.map(ex=><button key={ex.id} onClick={()=>addExtraRow(ex)} className="la-tap" style={{display:"flex",alignItems:"center",justifyContent:"space-between",width:"100%",background:"#fff",border:`1px dashed ${C.pink}`,borderRadius:9,padding:"9px 12px",cursor:"pointer",marginBottom:6,textAlign:"left"}}>
                 <span style={{fontSize:13,fontWeight:"bold",color:C.dark}}>+ {ex.name}</span>
-                <span style={{fontSize:12,color:C.muted}}>{ex.sizes?`${fmt(ex.sizes.chico)} / ${fmt(ex.sizes.grande)}`:fmt(ex.price||0)}</span>
+                <span style={{fontSize:12,color:C.muted}}>{ex.sizes?sizePriceLabel(ex):fmt(ex.price||0)}</span>
               </button>)}
             </div>}
 
@@ -2506,7 +2559,7 @@
     /* =========================================================
        TAB · DÍA
        ========================================================= */
-    function TabDia({catalog, completed, dayTotal, openTotal, openCount, catBreakdown, topItems, payBreakdown, hourFlow,
+    function TabDia({catalog, completed, dayTotal, dayCremeria, openTotal, openCount, catBreakdown, topItems, payBreakdown, hourFlow,
                      onCloseAll, onDeleteCompleted, onEditCompleted, onReopenCompleted, onTicket, onReport, onTerminar}){
       const [showAll,setShowAll]=useState(false);
       const shown=showAll?completed:completed.slice(0,3);
@@ -2515,6 +2568,10 @@
       return <div className="la-tabpad">
         <div style={{display:"flex",gap:10,marginBottom:10}}><StatCard label="Total vendido" value={fmt(dayTotal)} index={0} /><StatCard label="Cuentas cerradas" value={completed.length} index={1} /></div>
         <div style={{display:"flex",gap:10,marginBottom:16}}><StatCard label="En cuentas abiertas" value={fmt(openTotal)} pink index={2} /><StatCard label="Cuentas abiertas" value={openCount} pink index={3} /></div>
+        {dayCremeria>0&&<div className="la-row" style={{background:"#f5f0e8",border:"1px solid #e5ddc5",borderRadius:12,padding:"12px 16px",marginBottom:16,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <div><div style={{fontSize:11,fontWeight:"bold",textTransform:"uppercase",letterSpacing:0.5,color:C.muted}}>🧀 Cremería (aparte del total café)</div></div>
+          <div style={{fontSize:18,fontWeight:"bold",color:C.dark}}>{fmt(dayCremeria)}</div>
+        </div>}
         {hasData&&<div className="la-pay-grid" style={{marginBottom:16}}>
           <div className="la-row" style={{background:C.card,border:"1px solid #e5ddd5",borderRadius:12,padding:"14px 16px",marginBottom:14}}>
             <div style={{fontSize:13,fontWeight:"bold",textTransform:"uppercase",letterSpacing:0.5,marginBottom:12,opacity:0.7}}>Desglose de pagos</div>
@@ -2599,7 +2656,7 @@
     /* =========================================================
        TAB · SEMANA
        ========================================================= */
-    function TabSemana({catalog, weekDays, weekTotal, weekCount, viewWeekStart, canPrev, canNext, onPrev, onNext, onReport, onDayDetail}){
+    function TabSemana({catalog, weekDays, weekTotal, weekCremeria, weekCount, viewWeekStart, canPrev, canNext, onPrev, onNext, onReport, onDayDetail}){
       const wd=new Date(viewWeekStart); const we=new Date(viewWeekStart); we.setDate(we.getDate()+6);
       const wkLabel=`${wd.getDate()} ${MONTHS[wd.getMonth()].slice(0,3)} – ${we.getDate()} ${MONTHS[we.getMonth()].slice(0,3)} ${we.getFullYear()}`;
       // Aggregate hours pico across the week's days
@@ -2619,6 +2676,10 @@
           </div>
         </div>
         <div style={{display:"flex",gap:10,marginBottom:16}}><StatCard label="Total semana" value={fmt(weekTotal)} index={0} /><StatCard label="Cuentas" value={weekCount} pink index={1} /></div>
+        {weekCremeria>0&&<div className="la-row" style={{background:"#f5f0e8",border:"1px solid #e5ddc5",borderRadius:12,padding:"12px 16px",marginBottom:16,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <div style={{fontSize:11,fontWeight:"bold",textTransform:"uppercase",letterSpacing:0.5,color:C.muted}}>🧀 Cremería (aparte del total café)</div>
+          <div style={{fontSize:18,fontWeight:"bold",color:C.dark}}>{fmt(weekCremeria)}</div>
+        </div>}
         {weekDays.length===0&&<div className="la-empty" style={{textAlign:"center",padding:"40px 20px",color:C.muted,fontSize:14}}>Aún no hay días archivados esta semana.<div style={{fontSize:12,marginTop:6}}>Termina un día para verlo aquí.</div></div>}
         {weekDays.length>0&&<>
           <SectionLabel>Días archivados</SectionLabel>
@@ -2643,7 +2704,7 @@
     /* =========================================================
        TAB · MES
        ========================================================= */
-    function TabMes({catalog, monthWeeks, monthTotal, monthCount, curMonth, curYear, canPrev, canNext, onPrev, onNext, onReport, onWeekDetail}){
+    function TabMes({catalog, monthWeeks, monthTotal, monthCremeria, monthCount, curMonth, curYear, canPrev, canNext, onPrev, onNext, onReport, onWeekDetail}){
       const monthHours=useMemo(()=>{
         const buckets=Array(24).fill(0).map((_,h)=>({h,count:0,total:0}));
         monthWeeks.forEach(w=>w.days.forEach(d=>d.orders?.forEach(o=>{ const h=hourBucket(o.createdAt||o.completedAt); buckets[h].count+=1; buckets[h].total+=orderTotalWith(catalog,o); })));
@@ -2660,6 +2721,10 @@
           </div>
         </div>
         <div style={{display:"flex",gap:10,marginBottom:16}}><StatCard label="Total mes" value={fmt(monthTotal)} index={0} /><StatCard label="Cuentas" value={monthCount} pink index={1} /></div>
+        {monthCremeria>0&&<div className="la-row" style={{background:"#f5f0e8",border:"1px solid #e5ddc5",borderRadius:12,padding:"12px 16px",marginBottom:16,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <div style={{fontSize:11,fontWeight:"bold",textTransform:"uppercase",letterSpacing:0.5,color:C.muted}}>🧀 Cremería (aparte del total café)</div>
+          <div style={{fontSize:18,fontWeight:"bold",color:C.dark}}>{fmt(monthCremeria)}</div>
+        </div>}
         {monthWeeks.length===0&&<div className="la-empty" style={{textAlign:"center",padding:"40px 20px",color:C.muted,fontSize:14}}>Sin semanas archivadas este mes.</div>}
         {monthWeeks.length>0&&<>
           <SectionLabel>Semanas del mes</SectionLabel>
@@ -2841,14 +2906,16 @@
        DAY REPORT
        ========================================================= */
     function DayReport({catalog, completed, hourFlow, onClose}){
-      const dayTotal=completed.reduce((s,o)=>s+orderTotalWith(catalog,o),0);
+      const dayTotal=completed.reduce((s,o)=>s+cafeTotalWith(catalog,o),0);
+      const dayCremeria=completed.reduce((s,o)=>s+cremeriaTotalWith(catalog,o),0);
       const itemCount=completed.reduce((s,o)=>s+orderItemCountWith(o),0);
       const {ef, ta, tr, propinas:tipTotal}=paymentTotalsWith(catalog,completed);
-      const catData=useMemo(()=>{ const m={}; completed.forEach(o=>o.lines.forEach(l=>{ const it=catalog.itemMap[l.itemId]; const c=it?catalog.catMap[it.catId]?.name||"Otro":"(eliminado)"; if(!m[c]) m[c]={cat:c,qty:0,total:0}; m[c].qty+=l.qty; m[c].total+=lineSubtotalWith(catalog,l); })); return Object.values(m).sort((a,b)=>b.total-a.total); },[completed,catalog]);
+      const catData=useMemo(()=>{ const m={}; completed.forEach(o=>o.lines.forEach(l=>{ const it=catalog.itemMap[l.itemId]; if(it&&isExcludedCat(catalog,it.catId)) return; const c=it?catalog.catMap[it.catId]?.name||"Otro":"(eliminado)"; if(!m[c]) m[c]={cat:c,qty:0,total:0}; m[c].qty+=l.qty; m[c].total+=lineSubtotalWith(catalog,l); })); return Object.values(m).sort((a,b)=>b.total-a.total); },[completed,catalog]);
       const top=useMemo(()=>topItemsWith(catalog,completed,5),[completed,catalog]);
       const maxCat=catData[0]?.total||1;
       return <ReportShell subtitle="Resumen del día" dateLine={fmtFullDate(Date.now())} onClose={onClose} exportId={"la-almendra-dia-"+new Date().toISOString().slice(0,10)}>
         <ReportTotalBlock total={fmt(dayTotal)} subline={completed.length+" cuentas \u00b7 "+itemCount+" items \u00b7 Prom "+fmt(completed.length?dayTotal/completed.length:0)} />
+        {dayCremeria>0&&<div style={{textAlign:"center",fontSize:12,color:C.muted,marginTop:-10,marginBottom:10,gridColumn:"1/-1"}}>🧀 Cremería (aparte): {fmt(dayCremeria)}</div>}
         {/* Right column first in DOM → mobile shows Payments+Top before Categories */}
         <div className="la-report-col-right">
           <PaymentBlock ef={ef} ta={ta} tr={tr} propinas={tipTotal} />
@@ -2867,6 +2934,7 @@
        ========================================================= */
     function WeekReport({catalog, weekDays, curWeekStart, onClose}){
       const total=weekDays.reduce((s,d)=>s+d.total,0);
+      const weekCremeria=weekDays.reduce((s,d)=>s+(d.cremeriaTotal||0),0);
       const cnt=weekDays.reduce((s,d)=>s+d.count,0);
       const ws=new Date(curWeekStart); const we=new Date(curWeekStart); we.setDate(we.getDate()+6);
       const dateLine=ws.getDate()+" "+MONTHS[ws.getMonth()].slice(0,3)+" \u2013 "+we.getDate()+" "+MONTHS[we.getMonth()].slice(0,3)+" de "+we.getFullYear();
@@ -2877,6 +2945,7 @@
       const bestDay=[...weekDays].sort((a,b)=>b.total-a.total)[0];
       return <ReportShell subtitle="Resumen semanal" dateLine={dateLine} onClose={onClose} exportId={"la-almendra-semana-"+new Date(curWeekStart).toISOString().slice(0,10)}>
         <ReportTotalBlock total={fmt(total)} subline={cnt+" cuentas \u00b7 Prom "+fmt(cnt?total/cnt:0)} />
+        {weekCremeria>0&&<div style={{textAlign:"center",fontSize:12,color:C.muted,marginTop:-10,marginBottom:10,gridColumn:"1/-1"}}>🧀 Cremería (aparte): {fmt(weekCremeria)}</div>}
         <div className="la-report-col-right">
           <PaymentBlock ef={ef} ta={ta} tr={tr} propinas={propinas} />
           {top.length>0&&<NumberedBlock title={"Top "+top.length+" de la semana"} rows={top} />}
@@ -2904,6 +2973,7 @@
        ========================================================= */
     function MonthReport({catalog, monthWeeks, curMonth, curYear, onClose}){
       const total=monthWeeks.reduce((s,w)=>s+w.total,0);
+      const monthCremeria=monthWeeks.reduce((s,w)=>s+(w.cremeriaTotal||0),0);
       const cnt=monthWeeks.reduce((s,w)=>s+w.count,0);
       const allOrders=monthWeeks.flatMap(w=>w.days.flatMap(d=>d.orders||[]));
       const {ef, ta, tr, propinas}=paymentTotalsWith(catalog,allOrders);
@@ -2915,6 +2985,7 @@
       const monthName=MONTHS[curMonth][0].toUpperCase()+MONTHS[curMonth].slice(1);
       return <ReportShell subtitle="Resumen mensual" dateLine={monthName+" "+curYear} onClose={onClose} exportId={"la-almendra-mes-"+curYear+"-"+String(curMonth+1).padStart(2,"0")}>
         <ReportTotalBlock total={fmt(total)} subline={cnt+" cuentas \u00b7 Prom "+fmt(cnt?total/cnt:0)} />
+        {monthCremeria>0&&<div style={{textAlign:"center",fontSize:12,color:C.muted,marginTop:-10,marginBottom:10,gridColumn:"1/-1"}}>🧀 Cremería (aparte): {fmt(monthCremeria)}</div>}
         <div className="la-report-col-right">
           <PaymentBlock ef={ef} ta={ta} tr={tr} propinas={propinas} />
           {top.length>0&&<NumberedBlock title={"Top "+top.length+" del mes"} rows={top} />}
@@ -3135,7 +3206,7 @@
               {open&&<div style={{padding:"8px 12px 12px"}}>
                 {its.length===0&&<div style={{fontSize:12.5,color:C.muted,textAlign:"center",padding:"12px 0",fontStyle:"italic"}}>Sin items en esta categoría</div>}
                 {its.map(it=>{
-                  const priceLbl=it.sizes?`${fmt(it.sizes.chico)} / ${fmt(it.sizes.grande)}`:fmt(it.price||0);
+                  const priceLbl=it.sizes?sizePriceLabel(it):fmt(it.price||0);
                   const linkedTo=it.linkableTo?catalog.itemMap[it.linkableTo]?.name:null;
                   return <div key={it.id} className="la-row" style={{display:"flex",alignItems:"center",gap:8,padding:"9px 10px",background:C.bg,borderRadius:8,marginBottom:6}}>
                     <div style={{flex:1,minWidth:0}}>
@@ -3156,7 +3227,7 @@
                   {deletedIts.map(it=><div key={it.id} className="la-row" style={{display:"flex",alignItems:"center",gap:8,padding:"7px 10px",background:"#fdf0f0",borderRadius:8,marginBottom:4,opacity:0.75}}>
                     <div style={{flex:1,minWidth:0}}>
                       <div style={{fontSize:13,color:C.danger,textDecoration:"line-through"}}>{it.name}</div>
-                      <div style={{fontSize:11,color:C.muted}}>{it.sizes?`${fmt(it.sizes.chico)} / ${fmt(it.sizes.grande)}`:fmt(it.price||0)}</div>
+                      <div style={{fontSize:11,color:C.muted}}>{it.sizes?sizePriceLabel(it):fmt(it.price||0)}</div>
                     </div>
                     <button onClick={()=>{setCatalogRaw(prev=>({...prev,items:prev.items.map(i=>i.id===it.id?{...i,deleted:false}:i)}));showToast(`"${it.name}" restaurado`);}} className="la-tap" title="Restaurar" style={{background:"transparent",border:`1.5px solid ${C.success}`,color:C.success,borderRadius:7,padding:"4px 9px",fontSize:11.5,fontWeight:"bold",cursor:"pointer"}}>↩ Restaurar</button>
                   </div>)}
@@ -3209,6 +3280,8 @@
       const [hasSizes,setHasSizes]=useState(!!item.sizes);
       const [priceSimple,setPriceSimple]=useState(item.price??0);
       const [sizeChico,setSizeChico]=useState(item.sizes?.chico??0);
+      const [hasMediano,setHasMediano]=useState(item.sizes?.mediano!==undefined);
+      const [sizeMediano,setSizeMediano]=useState(item.sizes?.mediano??0);
       const [sizeGrande,setSizeGrande]=useState(item.sizes?.grande??0);
       const [linkable,setLinkable]=useState(item.linkableTo||"");
       const [newChoiceIdx,setNewChoiceIdx]=useState(null); // which option is getting a new choice
@@ -3238,11 +3311,11 @@
       function updateChoiceLabel(idx,ci,label){ setOptions(o=>o.map((op,i)=>i===idx?{...op,choices:op.choices.map((c,x)=>x===ci?{...c,label}:c)}:op)); }
       function updateChoicePrice(idx,ci,price){ setOptions(o=>o.map((op,i)=>i===idx?{...op,choices:op.choices.map((c,x)=>x===ci?{...c,price:Number(price)||0}:c)}:op)); }
 
-      const valid=name.trim()&&catId&&(hasSizes?(sizeChico>0&&sizeGrande>0):priceSimple>=0);
+      const valid=name.trim()&&catId&&(hasSizes?(sizeChico>0&&sizeGrande>0&&(!hasMediano||sizeMediano>0)):priceSimple>=0);
 
       function save(){
         const out={id:item.id, catId, name:name.trim(), foodKind};
-        if(hasSizes) out.sizes={chico:Number(sizeChico)||0, grande:Number(sizeGrande)||0};
+        if(hasSizes){ out.sizes={chico:Number(sizeChico)||0, grande:Number(sizeGrande)||0}; if(hasMediano) out.sizes.mediano=Number(sizeMediano)||0; }
         else out.price=Number(priceSimple)||0;
         if(linkable) out.linkableTo=linkable;
         const cleanOpts=options.filter(o=>o.label.trim()&&o.choices.length>0).map(o=>{
@@ -3275,13 +3348,16 @@
           {fieldLabel("Precio base")}
           <div style={{display:"flex",gap:8,marginBottom:8}}>
             <button onClick={()=>setHasSizes(false)} className="la-chip" style={chip(!hasSizes)}>Precio único</button>
-            <button onClick={()=>setHasSizes(true)} className="la-chip" style={chip(hasSizes)}>Por tamaño (chico/grande)</button>
+            <button onClick={()=>setHasSizes(true)} className="la-chip" style={chip(hasSizes)}>Por tamaño</button>
           </div>
-          {!hasSizes?<input type="number" inputMode="decimal" style={{...inputStyle,marginBottom:14}} value={priceSimple} onChange={e=>setPriceSimple(e.target.value)} placeholder="Precio en pesos" />:
+          {!hasSizes?<input type="number" inputMode="decimal" style={{...inputStyle,marginBottom:14}} value={priceSimple} onChange={e=>setPriceSimple(e.target.value)} placeholder="Precio en pesos" />:<>
+            <button onClick={()=>setHasMediano(m=>!m)} className="la-chip" style={{...chip(hasMediano),marginBottom:8}}>{hasMediano?"✓ ":""}Incluir tamaño Mediano</button>
             <div style={{display:"flex",gap:8,marginBottom:14}}>
               <div style={{flex:1}}><div style={{fontSize:11,color:C.muted,marginBottom:4}}>Chico</div><input type="number" inputMode="decimal" style={smallInput} value={sizeChico} onChange={e=>setSizeChico(e.target.value)} /></div>
+              {hasMediano&&<div style={{flex:1}}><div style={{fontSize:11,color:C.muted,marginBottom:4}}>Mediano</div><input type="number" inputMode="decimal" style={smallInput} value={sizeMediano} onChange={e=>setSizeMediano(e.target.value)} /></div>}
               <div style={{flex:1}}><div style={{fontSize:11,color:C.muted,marginBottom:4}}>Grande</div><input type="number" inputMode="decimal" style={smallInput} value={sizeGrande} onChange={e=>setSizeGrande(e.target.value)} /></div>
-            </div>}
+            </div>
+          </>}
           {fieldLabel("¿Es un extra que se agrega a otro platillo?")}
           <select style={{...inputStyle,marginBottom:14}} value={linkable} onChange={e=>setLinkable(e.target.value)}>
             <option value="">No, este se pide solo</option>
